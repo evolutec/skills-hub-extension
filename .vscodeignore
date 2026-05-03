@@ -1,0 +1,15 @@
+**/.git
+**/.gitignore
+**/node_modules
+**/out/test
+**/*.map
+**/*.ts
+**/*.md
+**/config
+.vscode
+*.vsix
+**/.DS_Store
+**/npm-debug.log
+**/yarn-error.log
+**/.vscode/**
+**/README.md
