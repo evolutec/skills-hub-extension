@@ -12,6 +12,11 @@ interface RepoConfig {
   repos: string[];
 }
 
+interface GithubTreeEntry {
+  path: string;
+  type: 'blob' | 'tree' | 'commit';
+}
+
 export function activate(context: vscode.ExtensionContext) {
   const provider = new SkillsHubViewProvider(context.extensionUri, context.globalStorageUri);
   context.subscriptions.push(
@@ -85,8 +90,8 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   }
 
   private getRepoConfigFile(): vscode.Uri {
-    const configFolder = this.getConfigFolder();
-    return vscode.Uri.file(path.join(configFolder.fsPath, 'conf-repo.json'));
+    // Forcer la source unique claude-plugins.dev
+    return vscode.Uri.file(path.join(this.extensionUri.fsPath, 'skills-hub-config', 'conf-repo.json'));
   }
 
   private async ensureConfigFiles() {
@@ -143,7 +148,8 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   private async loadState() {
     await this.ensureConfigFiles();
     const config = await this.readConfig();
-    const repoConfig = await this.readRepoConfig();
+    // Forcer la source unique
+    const repoConfig = { repos: ['https://claude-plugins.dev/skills'] };
     const installedSkills = await this.loadInstalledSkills(config.skillPaths);
     const marketplaceSkills = await this.loadMarketplaceSkills(repoConfig.repos);
     return {
@@ -267,23 +273,170 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     const result: { repo: string; skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[] }[] = [];
     for (const repo of repos) {
       try {
+        if (this.isClaudePluginsSource(repo)) {
+          const skills = await this.loadClaudePluginsSkills(repo);
+          if (!skills.length) {
+            result.push({ repo, skills: [{ name: '', path: '', entries: ['Aucun skill détecté dans cette source'], missingSkillMd: true }] });
+          } else {
+            result.push({ repo, skills });
+          }
+          continue;
+        }
+
         const parsed = this.parseGithubRepo(repo);
         if (!parsed) {
           result.push({ repo, skills: [{ name: '', path: '', entries: ['Format de repo invalide'], missingSkillMd: true }] });
           continue;
         }
 
-        const skills = await this.findGithubSkills(parsed.owner, parsed.name, parsed.path, parsed.ref);
+        let skills = await this.findGithubSkillsFromTree(parsed.owner, parsed.name, parsed.path, parsed.ref);
+        if (!skills.length) {
+          skills = await this.findGithubSkills(parsed.owner, parsed.name, parsed.path, parsed.ref);
+        }
         if (!skills.length) {
           result.push({ repo, skills: [{ name: '', path: '', entries: ['Aucun skill détecté dans le repo'], missingSkillMd: true }] });
         } else {
           result.push({ repo, skills });
         }
       } catch (error) {
-        result.push({ repo, skills: [{ name: '', path: '', entries: ['Impossible de charger le repo GitHub'], missingSkillMd: true }] });
+        result.push({
+          repo,
+          skills: [{ name: '', path: '', entries: [this.formatGithubError(error)], missingSkillMd: true }]
+        });
       }
     }
     return result;
+  }
+
+  private isClaudePluginsSource(source: string): boolean {
+    return source.includes('claude-plugins.dev');
+  }
+
+  private async loadClaudePluginsSkills(source: string) {
+    // Utilise l'API JSON officielle pour récupérer la liste des skills
+    const apiUrl = 'https://claude-plugins.dev/api/skills';
+    const raw = await this.fetchUrlText(apiUrl);
+    const data = JSON.parse(raw);
+    if (!data.skills || !Array.isArray(data.skills)) return [];
+    return data.skills.map((skill: any) => ({
+      name: skill.name,
+      path: skill.namespace,
+      entries: [skill.description || '', `Source: claude-plugins.dev`, skill.sourceUrl],
+      missingSkillMd: false
+    }));
+  }
+
+  private fetchUrlText(url: string, redirectCount = 0): Promise<string> {
+    if (redirectCount > 5) {
+      return Promise.reject(new Error('Trop de redirections'));
+    }
+    return new Promise((resolve, reject) => {
+      const req = https.request(url, {
+        method: 'GET',
+        headers: { 'User-Agent': 'vscode-skills-hub-extension' }
+      }, (res) => {
+        const status = res.statusCode || 0;
+        if (status >= 300 && status < 400 && res.headers.location) {
+          const redirectUrl = new URL(res.headers.location, url).toString();
+          resolve(this.fetchUrlText(redirectUrl, redirectCount + 1));
+          return;
+        }
+
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          if (status >= 400) {
+            reject(new Error(`HTTP ${status}`));
+            return;
+          }
+          resolve(body);
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  private formatGithubError(error: unknown): string {
+    if (error instanceof Error) {
+      return `GitHub: ${error.message}`;
+    }
+    return 'Impossible de charger le repo GitHub';
+  }
+
+  private async findGithubSkillsFromTree(owner: string, repo: string, repoPath: string, ref: string) {
+    const tree = await this.fetchGithubTree(owner, repo, ref);
+    const prefix = repoPath ? `${repoPath.replace(/^\/+|\/+$/g, '')}/` : '';
+    const skillDirs = new Set<string>();
+
+    for (const entry of tree) {
+      if (entry.type !== 'blob') {
+        continue;
+      }
+      if (!entry.path.startsWith(prefix)) {
+        continue;
+      }
+      if (entry.path === `${prefix}SKILL.md` || entry.path.endsWith('/SKILL.md')) {
+        const dir = path.posix.dirname(entry.path);
+        skillDirs.add(dir);
+      }
+    }
+
+    if (!skillDirs.size) {
+      return [];
+    }
+
+    return Array.from(skillDirs)
+      .sort((a, b) => a.localeCompare(b))
+      .map((dirPath) => {
+        const name = path.posix.basename(dirPath);
+        const relative = repoPath
+          ? (dirPath.startsWith(repoPath) ? dirPath.slice(repoPath.length).replace(/^\/+/, '') : dirPath)
+          : dirPath;
+        return {
+          name,
+          path: relative,
+          entries: ['SKILL.md'],
+          missingSkillMd: false
+        };
+      });
+  }
+
+  private fetchGithubTree(owner: string, repo: string, ref: string): Promise<GithubTreeEntry[]> {
+    const treeRef = ref || 'HEAD';
+    const refSegment = encodeURIComponent(treeRef);
+    const options = {
+      hostname: 'api.github.com',
+      port: 443,
+      path: `/repos/${owner}/${repo}/git/trees/${refSegment}?recursive=1`,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'vscode-skills-hub-extension',
+        Accept: 'application/vnd.github.v3+json'
+      }
+    };
+
+    return new Promise((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(body) as { tree?: GithubTreeEntry[]; message?: string };
+            if (res.statusCode && res.statusCode >= 400) {
+              const message = json.message ? `HTTP ${res.statusCode} - ${json.message}` : `HTTP ${res.statusCode}`;
+              reject(new Error(message));
+              return;
+            }
+            resolve(Array.isArray(json.tree) ? json.tree : []);
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
   }
 
   private async findGithubSkills(owner: string, repo: string, repoPath: string, ref: string) {
@@ -386,15 +539,20 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
 
     return new Promise((resolve, reject) => {
       const req = https.request(options, (res) => {
-        if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode}`));
-          return;
-        }
         let body = '';
         res.on('data', (chunk) => { body += chunk; });
         res.on('end', () => {
           try {
-            const json = JSON.parse(body);
+            const json = JSON.parse(body) as { message?: string } | any[];
+            if (res.statusCode && res.statusCode >= 400) {
+              if (Array.isArray(json)) {
+                reject(new Error(`HTTP ${res.statusCode}`));
+                return;
+              }
+              const message = json.message ? `HTTP ${res.statusCode} - ${json.message}` : `HTTP ${res.statusCode}`;
+              reject(new Error(message));
+              return;
+            }
             if (Array.isArray(json)) {
               resolve(json);
             } else {
@@ -412,6 +570,18 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
 
   private getHtmlForWebview(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'webview.js'));
+    const agentIconMap = {
+      copilot: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'copilot.svg')).toString(),
+      'kilo-code': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'kilo-code.svg')).toString(),
+      kade: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'kade.svg')).toString(),
+      claude: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'claude.svg')).toString(),
+      gemini: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'gemini.svg')).toString(),
+      'roo-code': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'roo-code.svg')).toString(),
+      'cool-cline': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'cool-cline.svg')).toString(),
+      cline: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'cline.svg')).toString(),
+      chatgpt: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'chatgpt.svg')).toString(),
+      default: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'default.svg')).toString()
+    };
     return `<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -447,6 +617,13 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     .skill-card { border: 1px solid var(--vscode-editorWidget-border); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--vscode-panel-background); }
     .skill-card-title { font-weight: 700; margin-bottom: 6px; }
     .skill-card-subtitle { color: var(--vscode-descriptionForeground); font-size: 0.9em; margin-bottom: 10px; }
+    .agent-icons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .agent-icon { display: flex; flex-direction: column; align-items: center; width: 48px; font-size: 0.7em; color: var(--vscode-descriptionForeground); }
+    .agent-icon img { width: 32px; height: 32px; border-radius: 6px; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-background); }
+    .agent-icon.installed img { border-color: #6abf69; filter: drop-shadow(0 0 2px rgba(106,191,105,0.9)); }
+    .install-button { padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; }
+    .install-button.installed { background: #6abf69; color: white; }
+    .install-button.available { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
     .skill-tree { font-family: var(--vscode-editor-font-family); white-space: pre; margin: 0; color: var(--vscode-foreground); }
     .small-text { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
   </style>
@@ -464,8 +641,8 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
 
   <div class="pane" id="pane-marketplace">
     <div class="section">
-      <label>Repos GitHub configurés</label>
-      <div id="marketplace-repos" class="list-box"></div>
+      <label>Source unique des skills : <a href="https://claude-plugins.dev/skills" target="_blank">claude-plugins.dev/skills</a></label>
+      <div id="marketplace-repos" class="list-box" style="display:none"></div>
     </div>
     <div class="section">
       <label>Compétences détectées dans le marketplace</label>
@@ -492,10 +669,10 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
       <button id="add-skill-path">Ajouter chemin</button>
     </div>
     <div class="section">
-      <label>Repos GitHub pour Marketplace</label>
-      <div id="repo-list" class="list-box"></div>
-      <input type="text" id="new-repo" placeholder="owner/repo ou https://github.com/owner/repo" />
-      <button id="add-repo">Ajouter repo</button>
+      <label>Source unique des skills : <a href="https://claude-plugins.dev/skills" target="_blank">claude-plugins.dev/skills</a></label>
+      <div id="repo-list" class="list-box" style="display:none"></div>
+      <input type="text" id="new-repo" style="display:none" />
+      <button id="add-repo" style="display:none">Ajouter repo</button>
     </div>
     <div class="section small-text">
       <p id="config-location-text">Chargement du chemin de configuration...</p>
@@ -503,6 +680,9 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
+  <script>
+    const agentIconMap = ${JSON.stringify(agentIconMap)};
+  </script>
   <script src="${scriptUri}"></script>
 </body>
 </html>`;

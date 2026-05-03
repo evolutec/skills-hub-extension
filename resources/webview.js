@@ -84,24 +84,12 @@
       return;
     }
     container.innerHTML = '';
-    state.repos.forEach((repo, index) => {
-      const div = document.createElement('div');
-      div.className = 'list-item';
-      div.textContent = repo;
-
-      const remove = document.createElement('button');
-      remove.textContent = 'Supprimer';
-      remove.addEventListener('click', function () {
-        state.repos.splice(index, 1);
-        sendSaveRepoConfig();
-      });
-
-      div.appendChild(remove);
-      container.appendChild(div);
-    });
-    if (!state.repos.length) {
-      container.textContent = 'Aucun repo configure.';
-    }
+    // Affichage non modifiable, source unique
+    const div = document.createElement('div');
+    div.className = 'list-item';
+    div.textContent = 'https://claude-plugins.dev/skills';
+    // Pas de bouton supprimer
+    container.appendChild(div);
   }
 
   function renderInstalledSkills() {
@@ -168,12 +156,54 @@
     };
   }
 
+  function normalizeAgentKey(folderPath) {
+    const normalized = folderPath.replace(/\\/g, '/').replace(/\/+$/, '');
+    const segments = normalized.split('/').filter(Boolean);
+    let key = segments[segments.length - 1] || '';
+    if (key.toLowerCase() === 'skills' && segments.length > 1) {
+      key = segments[segments.length - 2];
+    }
+    key = key.replace(/^\.+/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    return key;
+  }
+
+  function getDeclaredAgents() {
+    const seen = new Set();
+    return state.skillPaths.map(normalizeAgentKey).filter((agent) => {
+      if (!agent || seen.has(agent)) {
+        return false;
+      }
+      seen.add(agent);
+      return true;
+    });
+  }
+
+  function getInstalledSkillsByAgent() {
+    const result = {};
+    state.installedSkills.forEach((group) => {
+      const agent = normalizeAgentKey(group.folder);
+      if (!agent) {
+        return;
+      }
+      result[agent] = result[agent] || new Set();
+      (group.skills || []).forEach((skill) => {
+        if (skill.name) {
+          result[agent].add(skill.name);
+        }
+      });
+    });
+    return result;
+  }
+
   function renderMarketplace() {
     const repoContainer = byId('marketplace-repos');
     const skillsContainer = byId('marketplace-skills');
     if (!repoContainer || !skillsContainer) {
       return;
     }
+
+    const declaredAgents = getDeclaredAgents();
+    const installedByAgent = getInstalledSkillsByAgent();
 
     repoContainer.innerHTML = '';
     state.marketplaceSkills.forEach((repoGroup) => {
@@ -215,20 +245,40 @@
 
         const title = document.createElement('div');
         title.className = 'skill-card-title';
-        title.textContent = skill.name + '/';
+        title.textContent = skill.name;
         card.appendChild(title);
 
-        if (skill.path) {
-          const subtitle = document.createElement('div');
-          subtitle.className = 'skill-card-subtitle';
-          subtitle.textContent = skill.path;
-          card.appendChild(subtitle);
+        if (declaredAgents.length) {
+          const row = document.createElement('div');
+          row.className = 'agent-icons';
+          declaredAgents.forEach((agent) => {
+            const isInstalled = installedByAgent[agent] && installedByAgent[agent].has(skill.name);
+            const icon = document.createElement('div');
+            icon.className = 'agent-icon';
+            if (isInstalled) {
+              icon.classList.add('installed');
+            }
+            const img = document.createElement('img');
+            const iconSrc = typeof window !== 'undefined' && window.agentIconMap ? window.agentIconMap[agent] || window.agentIconMap.default : undefined;
+            img.src = iconSrc || '';
+            img.alt = agent;
+            icon.appendChild(img);
+            const label = document.createElement('div');
+            label.textContent = agent;
+            icon.appendChild(label);
+            row.appendChild(icon);
+          });
+          card.appendChild(row);
         }
 
-        const tree = document.createElement('pre');
-        tree.className = 'skill-tree';
-        tree.textContent = skill.entries.join('\n');
-        card.appendChild(tree);
+        const installed = declaredAgents.some((agent) => installedByAgent[agent] && installedByAgent[agent].has(skill.name));
+        const button = document.createElement('button');
+        button.className = 'install-button ' + (installed ? 'installed' : 'available');
+        button.textContent = installed ? 'Installé' : 'Installer';
+        if (installed) {
+          button.disabled = true;
+        }
+        card.appendChild(button);
 
         skillsContainer.appendChild(card);
       });
@@ -250,7 +300,7 @@
 
   function bindActions() {
     const addSkillPath = byId('add-skill-path');
-    const addRepo = byId('add-repo');
+    // Désactiver l'ajout de repo (source unique)
 
     if (addSkillPath) {
       addSkillPath.addEventListener('click', function () {
@@ -267,22 +317,7 @@
         sendSaveSkillConfig();
       });
     }
-
-    if (addRepo) {
-      addRepo.addEventListener('click', function () {
-        const input = byId('new-repo');
-        if (!input) {
-          return;
-        }
-        const value = input.value.trim();
-        if (!value) {
-          return;
-        }
-        state.repos.push(value);
-        input.value = '';
-        sendSaveRepoConfig();
-      });
-    }
+    // Pas d'ajout de repo possible
   }
 
   window.addEventListener('message', function (event) {
