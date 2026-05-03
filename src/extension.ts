@@ -321,7 +321,12 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     return data.skills.map((skill: any) => ({
       name: skill.name,
       path: skill.namespace,
-      entries: [skill.description || '', `Source: claude-plugins.dev`, skill.sourceUrl],
+      entries: [
+        skill.description || '',
+        `Source: claude-plugins.dev`,
+        skill.sourceUrl,
+        (skill.metadata && skill.metadata.iconUrl) ? skill.metadata.iconUrl : ''
+      ],
       missingSkillMd: false
     }));
   }
@@ -577,6 +582,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
       claude: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'claude.svg')).toString(),
       gemini: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'gemini.svg')).toString(),
       'roo-code': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'roo-code.svg')).toString(),
+      roo: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'roo.svg')).toString(),
       'cool-cline': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'cool-cline.svg')).toString(),
       cline: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'cline.svg')).toString(),
       chatgpt: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'chatgpt.svg')).toString(),

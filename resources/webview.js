@@ -248,6 +248,29 @@
         title.textContent = skill.name;
         card.appendChild(title);
 
+        // Affichage de la description du skill
+        if (skill.entries && skill.entries.length > 0 && typeof skill.entries[0] === 'string') {
+          const desc = document.createElement('div');
+          desc.className = 'skill-card-subtitle';
+          desc.textContent = skill.entries[0];
+          card.appendChild(desc);
+        }
+
+        // Affichage SVG du skill si présent dans entries
+        // Recherche d'une icône SVG ou image dans entries
+        const iconEntry = (skill.entries || []).find(e => typeof e === 'string' && (e.endsWith('.svg') || e.endsWith('.png') || e.endsWith('.jpg')));
+        if (iconEntry) {
+          const img = document.createElement('img');
+          img.src = iconEntry;
+          img.alt = skill.name;
+          img.style.width = '32px';
+          img.style.height = '32px';
+          img.style.display = 'block';
+          img.style.marginBottom = '8px';
+          img.onerror = function() { img.style.display = 'none'; };
+          card.appendChild(img);
+        }
+
         if (declaredAgents.length) {
           const row = document.createElement('div');
           row.className = 'agent-icons';
