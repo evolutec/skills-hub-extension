@@ -4,7 +4,6 @@
 **/out/test
 **/*.map
 **/*.ts
-**/*.md
 **/config
 .vscode
 *.vsix
@@ -12,4 +11,10 @@
 **/npm-debug.log
 **/yarn-error.log
 **/.vscode/**
-**/README.md
+**/.kilocode
+temp_vsix/**
+temp.zip
+
+!README.md
+!resources/default.png
+!resources/marketplace-cards.png

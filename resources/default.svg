@@ -1,4 +1,29 @@
 <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-  <rect width="64" height="64" rx="14" fill="#606060"/>
-  <text x="50%" y="54%" font-size="24" fill="#fff" text-anchor="middle" font-family="Arial, Helvetica, sans-serif">?</text>
+  <defs>
+    <linearGradient id="defaultRing" x1="16" y1="16" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b14ad6" />
+      <stop offset="0.55" stop-color="#5a83f0" />
+      <stop offset="1" stop-color="#43b6b1" />
+    </linearGradient>
+    <filter id="defaultGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2.2" />
+    </filter>
+    <clipPath id="defaultInnerClip">
+      <circle cx="32" cy="32" r="16.5" />
+    </clipPath>
+  </defs>
+
+  <circle cx="32" cy="32" r="24.5" fill="#ffffff" />
+  <circle cx="32" cy="32" r="20" fill="#eef0f8" />
+  <circle cx="32" cy="32" r="17" fill="none" stroke="url(#defaultRing)" stroke-width="2" />
+
+  <g clip-path="url(#defaultInnerClip)" filter="url(#defaultGlow)">
+    <circle cx="25" cy="22" r="7" fill="#c44bda" />
+    <circle cx="41" cy="24" r="7" fill="#4e86ff" />
+    <circle cx="39" cy="40" r="7" fill="#4bc28f" />
+    <circle cx="23" cy="40" r="7" fill="#ffba4a" />
+  </g>
+
+  <path d="M32 20l3.9 8.1 8.9 1.2-6.4 6.2 1.6 8.8-8-4.3-8 4.3 1.6-8.8-6.4-6.2 8.9-1.2z" fill="#ffffff" fill-opacity="0.9" />
+  <circle cx="32" cy="32" r="3.4" fill="#ffffff" />
 </svg>

@@ -2,8 +2,9 @@
   "name": "skills-hub-extension",
   "displayName": " A Skills Hub",
   "description": "Extension VS Code pour afficher et configurer les skills des agents installés et les repos GitHub dans un webview.",
-  "version": "0.0.12",
+  "version": "0.0.20",
   "publisher": "skills-hub",
+  "icon": "resources/default.png",
   "engines": {
     "vscode": "^1.83.0"
   },
@@ -16,7 +17,7 @@
   "main": "out/extension.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourname/skills-hub-extension.git"
+    "url": "https://github.com/evolutec/skills-hub-extension.git"
   },
   "license": "MIT",
   "contributes": {

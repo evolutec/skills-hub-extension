@@ -4,8 +4,14 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import * as https from 'https';
 
+interface AgentConfig {
+  path: string;
+  icon?: string;
+}
+
 interface SkillsConfig {
   skillPaths: string[];
+  agents: AgentConfig[];
 }
 
 interface RepoConfig {
@@ -15,6 +21,13 @@ interface RepoConfig {
 interface GithubTreeEntry {
   path: string;
   type: 'blob' | 'tree' | 'commit';
+}
+
+interface ClaudePluginsApiResponse {
+  total?: number;
+  limit?: number;
+  offset?: number;
+  skills?: any[];
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -36,6 +49,13 @@ export function deactivate() {
 }
 
 class SkillsHubViewProvider implements vscode.WebviewViewProvider {
+  private static readonly CLAUDE_PLUGINS_PAGE_SIZE = 200;
+  private static readonly CLAUDE_PLUGINS_CACHE_TTL_MS = 5 * 60 * 1000;
+  private claudePluginsCache?: {
+    loadedAt: number;
+    skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[];
+  };
+
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly globalStorageUri: vscode.Uri
@@ -71,10 +91,34 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
             command: 'installedSkills',
             data: await this.loadInstalledSkills(message.data.skillPaths)
           });
-        case 'refreshMarketplace':
+        case 'loadMarketplacePage':
           return webviewView.webview.postMessage({
             command: 'marketplaceSkills',
-            data: await this.loadMarketplaceSkills(message.data.repos)
+            data: await this.loadMarketplaceSkills(message.data.repos, message.data.page, message.data.limit)
+          });
+        case 'toggleMarketplaceSkill':
+          try {
+            const config = await this.readConfig();
+            const skillName = typeof message.data.skillName === 'string' ? message.data.skillName : '';
+            const agentPath = typeof message.data.agentPath === 'string' ? message.data.agentPath : '';
+            const install = Boolean(message.data.install);
+            if (skillName && agentPath) {
+              if (install) {
+                await this.installSkillToAgent(agentPath, skillName);
+              } else {
+                await this.uninstallSkillFromAgent(agentPath, skillName);
+              }
+            }
+          } catch {
+            // ignore toggle errors silently
+          }
+          webviewView.webview.postMessage({
+            command: 'installedSkills',
+            data: await this.loadInstalledSkills((await this.readConfig()).skillPaths)
+          });
+          return webviewView.webview.postMessage({
+            command: 'marketplaceSkills',
+            data: await this.loadMarketplaceSkills(message.data.repos, message.data.page, message.data.limit)
           });
       }
     });
@@ -106,7 +150,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     this.migrateLegacyConfigIfNeeded(configPath, repoPath);
 
     if (!fs.existsSync(configPath.fsPath)) {
-      fs.writeFileSync(configPath.fsPath, JSON.stringify({ skillPaths: [] }, null, 2), 'utf8');
+      fs.writeFileSync(configPath.fsPath, JSON.stringify({ skillPaths: [], agents: [] }, null, 2), 'utf8');
     }
     if (!fs.existsSync(repoPath.fsPath)) {
       fs.writeFileSync(repoPath.fsPath, JSON.stringify({ repos: [] }, null, 2), 'utf8');
@@ -154,6 +198,8 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     const marketplaceSkills = await this.loadMarketplaceSkills(repoConfig.repos);
     return {
       skillPaths: config.skillPaths,
+      agents: config.agents,
+      customAgentIcons: this.buildCustomAgentIcons(config.agents),
       repos: repoConfig.repos,
       configFolderPath: this.getConfigFolder().fsPath,
       installedSkills,
@@ -161,14 +207,102 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
+  private normalizeAgentPath(input: string): string {
+    const normalized = input.replace(/\\/g, '/').trim().replace(/\/+$/, '');
+    if (!normalized) {
+      return '';
+    }
+    if (normalized.toLowerCase().endsWith('/skills')) {
+      return normalized;
+    }
+    return `${normalized}/skills`;
+  }
+
+  private normalizeAgents(rawAgents: unknown, legacySkillPaths: string[]): AgentConfig[] {
+    const candidates: AgentConfig[] = [];
+    if (Array.isArray(rawAgents)) {
+      for (const item of rawAgents) {
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+        const pathValue = (item as { path?: unknown }).path;
+        if (typeof pathValue !== 'string') {
+          continue;
+        }
+        const normalizedPath = this.normalizeAgentPath(pathValue);
+        if (!normalizedPath) {
+          continue;
+        }
+        const iconValue = (item as { icon?: unknown }).icon;
+        const icon = typeof iconValue === 'string' && iconValue.trim() ? iconValue.trim() : undefined;
+        candidates.push({ path: normalizedPath, icon });
+      }
+    }
+
+    if (!candidates.length && Array.isArray(legacySkillPaths)) {
+      for (const skillPath of legacySkillPaths) {
+        if (typeof skillPath !== 'string') {
+          continue;
+        }
+        const normalizedPath = this.normalizeAgentPath(skillPath);
+        if (!normalizedPath) {
+          continue;
+        }
+        candidates.push({ path: normalizedPath });
+      }
+    }
+
+    const deduped: AgentConfig[] = [];
+    const seenPaths = new Set<string>();
+    for (const candidate of candidates) {
+      const key = candidate.path.toLowerCase();
+      if (seenPaths.has(key)) {
+        continue;
+      }
+      seenPaths.add(key);
+      deduped.push(candidate.icon ? { path: candidate.path, icon: candidate.icon } : { path: candidate.path });
+    }
+    return deduped;
+  }
+
+  private normalizeAgentKeyFromPath(folderPath: string): string {
+    const normalized = folderPath.replace(/\\/g, '/').replace(/\/+$|^\/+/, '');
+    const segments = normalized.split('/').filter(Boolean);
+    let key = segments[segments.length - 1] || '';
+    if (key.toLowerCase() === 'skills' && segments.length > 1) {
+      key = segments[segments.length - 2];
+    }
+    return key.replace(/^\.+/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  }
+
+  private buildCustomAgentIcons(agents: AgentConfig[]): Record<string, string> {
+    const iconsByAgent: Record<string, string> = {};
+    for (const agent of agents) {
+      if (!agent.icon || !agent.icon.trim()) {
+        continue;
+      }
+      const key = this.normalizeAgentKeyFromPath(agent.path);
+      if (!key) {
+        continue;
+      }
+      iconsByAgent[key] = agent.icon.trim();
+    }
+    return iconsByAgent;
+  }
+
   private async readConfig(): Promise<SkillsConfig> {
     const file = vscode.Uri.file(this.getConfigFile().fsPath);
     try {
       const raw = fs.readFileSync(file.fsPath, 'utf8');
       const parsed = JSON.parse(raw) as Partial<SkillsConfig>;
-      return { skillPaths: Array.isArray(parsed.skillPaths) ? parsed.skillPaths : [] };
+      const legacySkillPaths = Array.isArray(parsed.skillPaths) ? parsed.skillPaths : [];
+      const agents = this.normalizeAgents(parsed.agents, legacySkillPaths);
+      return {
+        agents,
+        skillPaths: agents.map((agent) => agent.path)
+      };
     } catch {
-      return { skillPaths: [] };
+      return { skillPaths: [], agents: [] };
     }
   }
 
@@ -183,16 +317,66 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async writeConfig(data: SkillsConfig) {
+  private async installSkillToAgent(agentPath: string, skillName: string) {
+    try {
+      const normalizedAgentPath = this.normalizeAgentPath(agentPath);
+      const skillDir = path.join(normalizedAgentPath, skillName);
+      if (fs.existsSync(skillDir)) {
+        return;
+      }
+      fs.mkdirSync(skillDir, { recursive: true });
+      const skillMdPath = path.join(skillDir, 'SKILL.md');
+      fs.writeFileSync(skillMdPath, `# ${skillName}\n\nSkill installée via Skills Hub.`, 'utf8');
+    } catch {
+      // ignore errors
+    }
+  }
+
+  private async uninstallSkillFromAgent(agentPath: string, skillName: string) {
+    try {
+      const normalizedAgentPath = this.normalizeAgentPath(agentPath);
+      const skillDir = path.join(normalizedAgentPath, skillName);
+      if (!fs.existsSync(skillDir)) {
+        return;
+      }
+      fs.rmSync(skillDir, { recursive: true, force: true });
+    } catch {
+      // ignore errors
+    }
+  }
+
+  private async writeConfig(data: Partial<SkillsConfig>) {
     await this.ensureConfigFiles();
     const file = vscode.Uri.file(this.getConfigFile().fsPath);
-    fs.writeFileSync(file.fsPath, JSON.stringify(data, null, 2), 'utf8');
+    const legacySkillPaths = Array.isArray(data.skillPaths) ? data.skillPaths : [];
+    const agents = this.normalizeAgents(data.agents, legacySkillPaths);
+    const payload: SkillsConfig = {
+      skillPaths: agents.map((agent) => agent.path),
+      agents
+    };
+    fs.writeFileSync(file.fsPath, JSON.stringify(payload, null, 2), 'utf8');
   }
 
   private async writeRepoConfig(data: RepoConfig) {
     await this.ensureConfigFiles();
     const file = vscode.Uri.file(this.getRepoConfigFile().fsPath);
     fs.writeFileSync(file.fsPath, JSON.stringify(data, null, 2), 'utf8');
+  }
+
+  private isDirectoryEntry(parentPath: string, entry: fs.Dirent): boolean {
+    if (entry.isDirectory()) {
+      return true;
+    }
+    if (!entry.isSymbolicLink()) {
+      return false;
+    }
+
+    try {
+      const resolved = path.join(parentPath, entry.name);
+      return fs.statSync(resolved).isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   private async loadInstalledSkills(skillPaths: string[]) {
@@ -214,7 +398,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
         }
 
         const entries = fs.readdirSync(fullPath, { withFileTypes: true })
-          .filter((entry) => entry.isDirectory());
+          .filter((entry) => this.isDirectoryEntry(fullPath, entry));
 
         for (const entry of entries) {
           const childPath = path.join(fullPath, entry.name);
@@ -269,23 +453,23 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
-  private async loadMarketplaceSkills(repos: string[]) {
-    const result: { repo: string; skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[] }[] = [];
+  private async loadMarketplaceSkills(repos: string[], page = 0, limit = SkillsHubViewProvider.CLAUDE_PLUGINS_PAGE_SIZE) {
+    const result: { repo: string; skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[]; total: number; page: number; limit: number }[] = [];
     for (const repo of repos) {
       try {
         if (this.isClaudePluginsSource(repo)) {
-          const skills = await this.loadClaudePluginsSkills(repo);
-          if (!skills.length) {
-            result.push({ repo, skills: [{ name: '', path: '', entries: ['Aucun skill détecté dans cette source'], missingSkillMd: true }] });
+          const response = await this.loadClaudePluginsSkills(repo, page, limit);
+          if (!response.skills.length) {
+            result.push({ repo, skills: [{ name: '', path: '', entries: ['Aucun skill détecté dans cette source'], missingSkillMd: true }], total: response.total, page: response.page, limit: response.limit });
           } else {
-            result.push({ repo, skills });
+            result.push({ repo, skills: response.skills, total: response.total, page: response.page, limit: response.limit });
           }
           continue;
         }
 
         const parsed = this.parseGithubRepo(repo);
         if (!parsed) {
-          result.push({ repo, skills: [{ name: '', path: '', entries: ['Format de repo invalide'], missingSkillMd: true }] });
+          result.push({ repo, skills: [{ name: '', path: '', entries: ['Format de repo invalide'], missingSkillMd: true }], total: 0, page: 0, limit: 0 });
           continue;
         }
 
@@ -294,14 +478,17 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
           skills = await this.findGithubSkills(parsed.owner, parsed.name, parsed.path, parsed.ref);
         }
         if (!skills.length) {
-          result.push({ repo, skills: [{ name: '', path: '', entries: ['Aucun skill détecté dans le repo'], missingSkillMd: true }] });
+          result.push({ repo, skills: [{ name: '', path: '', entries: ['Aucun skill détecté dans le repo'], missingSkillMd: true }], total: 0, page: 0, limit: 0 });
         } else {
-          result.push({ repo, skills });
+          result.push({ repo, skills, total: skills.length, page: 0, limit: skills.length });
         }
       } catch (error) {
         result.push({
           repo,
-          skills: [{ name: '', path: '', entries: [this.formatGithubError(error)], missingSkillMd: true }]
+          skills: [{ name: '', path: '', entries: [this.formatGithubError(error)], missingSkillMd: true }],
+          total: 0,
+          page: 0,
+          limit: 0
         });
       }
     }
@@ -312,23 +499,31 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     return source.includes('claude-plugins.dev');
   }
 
-  private async loadClaudePluginsSkills(source: string) {
-    // Utilise l'API JSON officielle pour récupérer la liste des skills
-    const apiUrl = 'https://claude-plugins.dev/api/skills';
+  private async loadClaudePluginsSkills(source: string, page: number, limit: number) {
+    const offset = Math.max(0, page) * Math.max(1, limit);
+    const apiUrl = `https://claude-plugins.dev/api/skills?limit=${Math.max(1, limit)}&offset=${offset}`;
     const raw = await this.fetchUrlText(apiUrl);
-    const data = JSON.parse(raw);
-    if (!data.skills || !Array.isArray(data.skills)) return [];
-    return data.skills.map((skill: any) => ({
-      name: skill.name,
-      path: skill.namespace,
-      entries: [
-        skill.description || '',
-        `Source: claude-plugins.dev`,
-        skill.sourceUrl,
-        (skill.metadata && skill.metadata.iconUrl) ? skill.metadata.iconUrl : ''
-      ],
-      missingSkillMd: false
-    }));
+    const data = JSON.parse(raw) as ClaudePluginsApiResponse;
+    const pageSkills = Array.isArray(data.skills) ? data.skills : [];
+    const total = typeof data.total === 'number' && data.total >= 0 ? data.total : pageSkills.length;
+
+    return {
+      skills: pageSkills.map((skill: any) => ({
+        name: skill.name,
+        path: skill.namespace,
+        description: typeof skill.description === 'string' ? skill.description : '',
+        entries: [
+          skill.description || '',
+          `Source: claude-plugins.dev`,
+          skill.sourceUrl,
+          (skill.metadata && skill.metadata.iconUrl) ? skill.metadata.iconUrl : ''
+        ],
+        missingSkillMd: false
+      })),
+      total,
+      page: Math.max(0, page),
+      limit: Math.max(1, limit)
+    };
   }
 
   private fetchUrlText(url: string, redirectCount = 0): Promise<string> {
@@ -612,72 +807,215 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Skills Hub</title>
   <style>
-    body { margin: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); }
+    body {
+      margin: 0;
+      font-family: var(--vscode-font-family);
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+    }
     .tab-toggle { display: none; }
-    .tabs { display: flex; border-bottom: 1px solid var(--vscode-editorWidget-border); }
-    .tab { flex: 1; padding: 10px; text-align: center; cursor: pointer; }
-    .pane { display: none; padding: 12px; }
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid var(--vscode-editorWidget-border);
+      gap: 4px;
+    }
+    .tab {
+      flex: 1;
+      padding: 12px 0;
+      text-align: center;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: border-color 0.2s ease, color 0.2s ease;
+    }
+    .tab:hover {
+      color: var(--vscode-button-secondaryForeground);
+    }
     #tab-marketplace:checked ~ .tabs label[for="tab-marketplace"],
-    #tab-installed:checked ~ .tabs label[for="tab-installed"],
+    #tab-agents:checked ~ .tabs label[for="tab-agents"],
     #tab-settings:checked ~ .tabs label[for="tab-settings"] {
-      border-bottom: 2px solid var(--vscode-editorWidget-focusBorder);
-      font-weight: bold;
+      border-bottom-color: var(--vscode-focusBorder);
+      color: var(--vscode-focusBorder);
+      font-weight: 700;
     }
     #tab-marketplace:checked ~ #pane-marketplace,
-    #tab-installed:checked ~ #pane-installed,
+    #tab-agents:checked ~ #pane-agents,
     #tab-settings:checked ~ #pane-settings {
       display: block;
     }
-    .section { margin-bottom: 18px; }
-    .section label { display: block; margin-bottom: 6px; font-weight: 600; }
-    input[type=text], select { width: 100%; padding: 8px; box-sizing: border-box; margin-bottom: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); }
-    button { margin-right: 8px; margin-bottom: 8px; padding: 8px 12px; border: none; border-radius: 4px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); cursor: pointer; }
-    button:hover { opacity: 0.95; }
-    .list-box { border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; padding: 10px; background: var(--vscode-panel-background); }
-    .list-item { margin-bottom: 4px; }
-    .folder-title { font-weight: 700; margin-top: 14px; }
-    .skill-card { border: 1px solid var(--vscode-editorWidget-border); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--vscode-panel-background); }
-    .skill-card-title { font-weight: 700; margin-bottom: 6px; }
-    .skill-card-subtitle { color: var(--vscode-descriptionForeground); font-size: 0.9em; margin-bottom: 10px; }
-    .agent-icons { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-    .agent-icon { display: flex; flex-direction: column; align-items: center; width: 48px; font-size: 0.7em; color: var(--vscode-descriptionForeground); }
-    .agent-icon img { width: 32px; height: 32px; border-radius: 6px; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-background); }
-    .agent-icon.installed img { border-color: #6abf69; filter: drop-shadow(0 0 2px rgba(106,191,105,0.9)); }
-    .install-button { padding: 6px 10px; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; }
-    .install-button.installed { background: #6abf69; color: white; }
-    .install-button.available { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .pane { display: none; padding: 16px; }
+    .section { margin-bottom: 20px; }
+    .section-title {
+      display: block;
+      margin: 0 auto 16px;
+      width: fit-content;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--vscode-foreground);
+    }
+    input[type=text], select {
+      width: 100%;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      margin-bottom: 8px;
+      border: 1px solid var(--vscode-input-border);
+      border-radius: 10px;
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+    }
+    button {
+      margin-right: 8px;
+      margin-bottom: 8px;
+      padding: 10px 14px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: var(--vscode-button-surface);
+      color: var(--vscode-button-foreground);
+      cursor: pointer;
+      transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+    }
+    button:hover {
+      transform: translateY(-1px);
+      background: var(--vscode-button-hoverBackground);
+      border-color: var(--vscode-button-border);
+    }
+    .list-box {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 14px;
+      padding: 16px;
+      background: var(--vscode-editor-background);
+      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.04);
+    }
+    .list-item { margin-bottom: 8px; }
+    .folder-title {
+      font-weight: 700;
+      margin-top: 20px;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-size: 0.95rem;
+    }
+    .skill-card {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 16px;
+      background: var(--vscode-editor-background);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.04);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .skill-card:hover {
+      border-color: var(--vscode-focusBorder);
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.06);
+    }
+    .skill-card-title { font-weight: 700; margin-bottom: 10px; }
+    .skill-card-subtitle { color: var(--vscode-descriptionForeground); font-size: 0.92em; margin-bottom: 12px; }
+    .agent-icons { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+    .agent-icon { display: flex; flex-direction: column; justify-content: center; align-items: center; width: 52px; font-size: 0.75em; color: var(--vscode-descriptionForeground); cursor: pointer; }
+    .agent-icon img { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-background); }
+    .agent-icon.installed img { border-color: #4eb85e; box-shadow: 0 0 0 2px rgba(78, 184, 94, 0.18); }
+    .install-button { display: none; }
     .skill-tree { font-family: var(--vscode-editor-font-family); white-space: pre; margin: 0; color: var(--vscode-foreground); }
     .small-text { color: var(--vscode-descriptionForeground); font-size: 0.9em; }
+    .agent-add-controls {
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: center;
+    }
+    .agent-add-controls #add-agent {
+      margin: 0;
+      min-width: 180px;
+      font-weight: 700;
+    }
+    .agent-form, .marketplace-filter-wrap {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 14px;
+      padding: 16px;
+      background: var(--vscode-editor-background);
+      box-shadow: 0 8px 20px rgba(0,0,0,0.04);
+    }
+    .agent-form-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+    .agent-form-title { font-weight: 700; }
+    .agent-form-close { background: transparent; border: 1px solid var(--vscode-editorWidget-border); color: var(--vscode-foreground); padding: 4px 10px; border-radius: 10px; font-size: 0.95rem; }
+    .agent-form label { display: block; margin-top: 10px; margin-bottom: 6px; font-weight: 600; }
+    .drop-zone { display: flex; align-items: center; justify-content: center; min-height: 68px; padding: 10px; margin-bottom: 8px; border: 1px dashed var(--vscode-input-border); border-radius: 12px; color: var(--vscode-descriptionForeground); cursor: pointer; text-align: center; }
+    .drop-zone.dragover { border-color: var(--vscode-focusBorder); }
+    .drop-zone-actions { margin-bottom: 8px; }
+    .agent-form-actions { margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .agent-icon-preview-wrap { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-background); display: flex; align-items: center; justify-content: center; overflow: hidden; margin-bottom: 8px; }
+    .agent-icon-preview-wrap img { width: 32px; height: 32px; display: none; }
+    .marketplace-filter-wrap { margin-top: 8px; }
+    .marketplace-filter-wrap input { margin-bottom: 0; }
+    .marketplace-pagination { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 14px; margin-bottom: 14px; }
   </style>
 </head>
 <body>
   <input class="tab-toggle" type="radio" name="tabset" id="tab-marketplace" checked />
+  <input class="tab-toggle" type="radio" name="tabset" id="tab-agents" />
   <input class="tab-toggle" type="radio" name="tabset" id="tab-settings" />
 
   <div class="tabs">
     <label class="tab" for="tab-marketplace">Marketplace</label>
+    <label class="tab" for="tab-agents">Agents</label>
     <label class="tab" for="tab-settings">Paramètres</label>
   </div>
 
   <div class="pane" id="pane-marketplace">
     <div class="section">
-      <label>Source unique des skills : <a href="https://claude-plugins.dev/skills" target="_blank">claude-plugins.dev/skills</a></label>
+      <div class="marketplace-filter-wrap">
+        <input type="text" id="marketplace-filter" placeholder="Filtrer les skills (nom, namespace, description)" />
+      </div>
+      <div class="marketplace-pagination">
+        <button id="marketplace-prev" type="button">Précédent</button>
+        <span id="marketplace-page-label" class="small-text"></span>
+        <button id="marketplace-next" type="button">Suivant</button>
+      </div>
+      <div id="marketplace-count" class="small-text"></div>
       <div id="marketplace-repos" class="list-box" style="display:none"></div>
     </div>
     <div class="section">
-      <label>Compétences détectées dans le marketplace</label>
       <div id="marketplace-skills" class="list-box"></div>
+    </div>
+  </div>
+
+  <div class="pane" id="pane-agents">
+    <div class="section">
+      <div class="agent-add-controls">
+        <button id="add-agent">Ajouter agent</button>
+      </div>
+      <div id="agent-form" class="agent-form" hidden>
+        <div class="agent-form-header">
+          <div id="agent-form-title" class="agent-form-title">Ajouter agent</div>
+          <button id="close-agent-form" class="agent-form-close" type="button" aria-label="Fermer le formulaire agent">✕</button>
+        </div>
+        <label for="new-agent-path">Chemin agent</label>
+        <input type="text" id="new-agent-path" placeholder="C:/Users/.../.roo/skills" />
+        <label for="new-agent-icon-select">Icône prédéfinie</label>
+        <select id="new-agent-icon-select"></select>
+        <label for="new-agent-icon-file">Icône personnalisée (glisser-déposer ou sélection fichier)</label>
+        <label id="agent-icon-dropzone" class="drop-zone" for="new-agent-icon-file">Dépose un fichier image ici, ou clique pour choisir.</label>
+        <input type="file" id="new-agent-icon-file" accept="image/*" hidden />
+        <div class="drop-zone-actions">
+          <button id="clear-agent-icon" type="button">Retirer l’icône personnalisée</button>
+        </div>
+        <div class="agent-icon-preview-wrap">
+          <img id="new-agent-icon-preview" alt="Aperçu icône agent" />
+        </div>
+        <div class="agent-form-actions">
+          <button id="save-agent" type="button">Sauvegarder</button>
+          <button id="cancel-agent" type="button">Annuler</button>
+        </div>
+      </div>
+      <div id="agent-cards" class="list-box"></div>
     </div>
   </div>
 
   <div class="pane" id="pane-settings">
     <div class="section">
-      <label>Agents déclarés</label>
-      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-        <input type="text" id="new-agent-path" placeholder="Ajouter le chemin d'un agent..." style="flex:1;" />
-        <button id="add-agent">Ajouter agent</button>
+      <label class="section-title">Paramètres</label>
+      <div class="list-box">
+        <div class="small-text">Aucun paramètre supplémentaire pour le moment.</div>
       </div>
-      <div id="agent-cards" class="list-box"></div>
     </div>
   </div>
 
