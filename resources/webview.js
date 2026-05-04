@@ -6,12 +6,382 @@
     vscode = undefined;
   }
 
-  let state = { skillPaths: [], agents: [], customAgentIcons: {}, repos: [], installedSkills: [], marketplaceSkills: [], marketplacePage: 0, marketplaceLimit: 50, marketplaceTotal: 0, configFolderPath: '' };
+  let state = { skillPaths: [], agents: [], customAgentIcons: {}, repos: [], installedSkills: [], marketplaceSkills: [], marketplacePage: 0, marketplaceLimit: 50, marketplaceTotal: 0, configFolderPath: '', language: 'en' };
   let pendingCustomIcon = '';
   let editingAgentKey = '';
+  const SUPPORTED_LANGUAGES = ['en', 'es', 'zh', 'fr', 'ar'];
+  const RTL_LANGUAGES = new Set(['ar']);
+  const LOCALE_BY_LANGUAGE = {
+    en: 'en-US',
+    es: 'es-ES',
+    zh: 'zh-CN',
+    fr: 'fr-FR',
+    ar: 'ar'
+  };
+
+  const TRANSLATIONS = {
+    en: {
+      'tab.marketplace': 'Marketplace',
+      'tab.agents': 'Agents',
+      'tab.settings': 'Settings',
+      'marketplace.filterPlaceholder': 'Filter skills (name, namespace, description)',
+      'marketplace.prev': 'Previous',
+      'marketplace.next': 'Next',
+      'marketplace.pageLabel': 'Page {page} / {total}',
+      'marketplace.noRepoConfigured': 'No configured source.',
+      'marketplace.noSkillDetected': 'No skills detected.',
+      'marketplace.noSkillForFilter': 'No skills match the current filter.',
+      'marketplace.countZero': '0 skills loaded',
+      'marketplace.countFiltered': '{visible} / {total} skills',
+      'marketplace.countAll': '{total} skills',
+      'marketplace.agentInstalled': '{agent} - installed',
+      'marketplace.agentNotInstalled': '{agent} - not installed',
+      'marketplace.agentPathMissing': 'Path not found for agent {agent}.',
+      'marketplace.installing': 'Installing {skill} for {agent}...',
+      'marketplace.removing': 'Removing {skill} for {agent}...',
+      'agents.add': 'Add Agent',
+      'agents.form.addTitle': 'Add Agent',
+      'agents.form.editTitle': 'Edit Agent',
+      'agents.form.closeAria': 'Close agent form',
+      'agents.form.pathLabel': 'Agent path',
+      'agents.form.pathPlaceholder': 'C:/Users/.../.roo/skills',
+      'agents.form.presetIconLabel': 'Preset icon',
+      'agents.form.customIconLabel': 'Custom icon (drag and drop or file picker)',
+      'agents.form.dropzone': 'Drop an image file here, or click to choose.',
+      'agents.form.clearCustomIcon': 'Remove custom icon',
+      'agents.form.save': 'Save',
+      'agents.form.cancel': 'Cancel',
+      'agents.form.autoOption': 'Automatic (based on agent name)',
+      'agents.noneDeclared': 'No agents declared.',
+      'agents.noSkill': 'No skills',
+      'agents.skillsList': 'Skills: {skills}',
+      'agents.editAgent': 'Edit this agent',
+      'agents.removeAgent': 'Remove this agent',
+      'settings.title': 'Settings',
+      'settings.languageLabel': 'Language',
+      'settings.languageHint': 'Language is saved automatically.',
+      'settings.languageSaved': 'Language updated.',
+      'language.name.en': 'English',
+      'language.name.es': 'Spanish',
+      'language.name.zh': 'Chinese',
+      'language.name.fr': 'French',
+      'language.name.ar': 'Arabic',
+      'status.apiMissingMarketplace': 'Cannot load marketplace: VS Code API unavailable.',
+      'status.apiMissingSave': 'Cannot save: VS Code API unavailable.',
+      'status.apiMissingRepoSave': 'Cannot save sources: VS Code API unavailable.',
+      'status.pathsSaved': 'Settings saved.',
+      'status.reposSaved': 'Source settings sent.',
+      'status.apiUnavailable': 'VS Code API unavailable.'
+    },
+    es: {
+      'tab.marketplace': 'Marketplace',
+      'tab.agents': 'Agentes',
+      'tab.settings': 'Configuración',
+      'marketplace.filterPlaceholder': 'Filtrar skills (nombre, namespace, descripción)',
+      'marketplace.prev': 'Anterior',
+      'marketplace.next': 'Siguiente',
+      'marketplace.pageLabel': 'Página {page} / {total}',
+      'marketplace.noRepoConfigured': 'Ninguna fuente configurada.',
+      'marketplace.noSkillDetected': 'No se detectaron skills.',
+      'marketplace.noSkillForFilter': 'Ningún skill coincide con el filtro actual.',
+      'marketplace.countZero': '0 skills cargados',
+      'marketplace.countFiltered': '{visible} / {total} skills',
+      'marketplace.countAll': '{total} skills',
+      'marketplace.agentInstalled': '{agent} - instalado',
+      'marketplace.agentNotInstalled': '{agent} - no instalado',
+      'marketplace.agentPathMissing': 'Ruta no encontrada para el agente {agent}.',
+      'marketplace.installing': 'Instalando {skill} para {agent}...',
+      'marketplace.removing': 'Eliminando {skill} de {agent}...',
+      'agents.add': 'Agregar agente',
+      'agents.form.addTitle': 'Agregar agente',
+      'agents.form.editTitle': 'Editar agente',
+      'agents.form.closeAria': 'Cerrar formulario de agente',
+      'agents.form.pathLabel': 'Ruta del agente',
+      'agents.form.pathPlaceholder': 'C:/Users/.../.roo/skills',
+      'agents.form.presetIconLabel': 'Icono predefinido',
+      'agents.form.customIconLabel': 'Icono personalizado (arrastrar y soltar o selector de archivo)',
+      'agents.form.dropzone': 'Suelta una imagen aquí o haz clic para seleccionar.',
+      'agents.form.clearCustomIcon': 'Quitar icono personalizado',
+      'agents.form.save': 'Guardar',
+      'agents.form.cancel': 'Cancelar',
+      'agents.form.autoOption': 'Automático (según el nombre del agente)',
+      'agents.noneDeclared': 'No hay agentes declarados.',
+      'agents.noSkill': 'Sin skills',
+      'agents.skillsList': 'Skills: {skills}',
+      'agents.editAgent': 'Editar este agente',
+      'agents.removeAgent': 'Eliminar este agente',
+      'settings.title': 'Configuración',
+      'settings.languageLabel': 'Idioma',
+      'settings.languageHint': 'El idioma se guarda automáticamente.',
+      'settings.languageSaved': 'Idioma actualizado.',
+      'language.name.en': 'Inglés',
+      'language.name.es': 'Español',
+      'language.name.zh': 'Chino',
+      'language.name.fr': 'Francés',
+      'language.name.ar': 'Árabe',
+      'status.apiMissingMarketplace': 'No se puede cargar el marketplace: API de VS Code no disponible.',
+      'status.apiMissingSave': 'No se puede guardar: API de VS Code no disponible.',
+      'status.apiMissingRepoSave': 'No se pueden guardar las fuentes: API de VS Code no disponible.',
+      'status.pathsSaved': 'Configuración guardada.',
+      'status.reposSaved': 'Configuración de fuentes enviada.',
+      'status.apiUnavailable': 'API de VS Code no disponible.'
+    },
+    zh: {
+      'tab.marketplace': '市场',
+      'tab.agents': '代理',
+      'tab.settings': '设置',
+      'marketplace.filterPlaceholder': '筛选技能（名称、命名空间、描述）',
+      'marketplace.prev': '上一页',
+      'marketplace.next': '下一页',
+      'marketplace.pageLabel': '第 {page} / {total} 页',
+      'marketplace.noRepoConfigured': '未配置来源。',
+      'marketplace.noSkillDetected': '未检测到技能。',
+      'marketplace.noSkillForFilter': '没有技能符合当前筛选条件。',
+      'marketplace.countZero': '已加载 0 个技能',
+      'marketplace.countFiltered': '{visible} / {total} 个技能',
+      'marketplace.countAll': '{total} 个技能',
+      'marketplace.agentInstalled': '{agent} - 已安装',
+      'marketplace.agentNotInstalled': '{agent} - 未安装',
+      'marketplace.agentPathMissing': '未找到代理 {agent} 的路径。',
+      'marketplace.installing': '正在为 {agent} 安装 {skill}...',
+      'marketplace.removing': '正在从 {agent} 移除 {skill}...',
+      'agents.add': '添加代理',
+      'agents.form.addTitle': '添加代理',
+      'agents.form.editTitle': '编辑代理',
+      'agents.form.closeAria': '关闭代理表单',
+      'agents.form.pathLabel': '代理路径',
+      'agents.form.pathPlaceholder': 'C:/Users/.../.roo/skills',
+      'agents.form.presetIconLabel': '预设图标',
+      'agents.form.customIconLabel': '自定义图标（拖放或文件选择）',
+      'agents.form.dropzone': '将图片拖到这里，或点击选择。',
+      'agents.form.clearCustomIcon': '移除自定义图标',
+      'agents.form.save': '保存',
+      'agents.form.cancel': '取消',
+      'agents.form.autoOption': '自动（根据代理名称）',
+      'agents.noneDeclared': '未声明任何代理。',
+      'agents.noSkill': '无技能',
+      'agents.skillsList': '技能：{skills}',
+      'agents.editAgent': '编辑此代理',
+      'agents.removeAgent': '删除此代理',
+      'settings.title': '设置',
+      'settings.languageLabel': '语言',
+      'settings.languageHint': '语言会自动保存。',
+      'settings.languageSaved': '语言已更新。',
+      'language.name.en': '英语',
+      'language.name.es': '西班牙语',
+      'language.name.zh': '中文',
+      'language.name.fr': '法语',
+      'language.name.ar': '阿拉伯语',
+      'status.apiMissingMarketplace': '无法加载市场：VS Code API 不可用。',
+      'status.apiMissingSave': '无法保存：VS Code API 不可用。',
+      'status.apiMissingRepoSave': '无法保存来源：VS Code API 不可用。',
+      'status.pathsSaved': '设置已保存。',
+      'status.reposSaved': '来源设置已发送。',
+      'status.apiUnavailable': 'VS Code API 不可用。'
+    },
+    fr: {
+      'tab.marketplace': 'Marketplace',
+      'tab.agents': 'Agents',
+      'tab.settings': 'Paramètres',
+      'marketplace.filterPlaceholder': 'Filtrer les skills (nom, namespace, description)',
+      'marketplace.prev': 'Précédent',
+      'marketplace.next': 'Suivant',
+      'marketplace.pageLabel': 'Page {page} / {total}',
+      'marketplace.noRepoConfigured': 'Aucune source configurée.',
+      'marketplace.noSkillDetected': 'Aucun skill détecté.',
+      'marketplace.noSkillForFilter': 'Aucun skill ne correspond au filtre actuel.',
+      'marketplace.countZero': '0 skill chargé',
+      'marketplace.countFiltered': '{visible} / {total} skills',
+      'marketplace.countAll': '{total} skills',
+      'marketplace.agentInstalled': '{agent} - installé',
+      'marketplace.agentNotInstalled': '{agent} - non installé',
+      'marketplace.agentPathMissing': 'Chemin non trouvé pour l\'agent {agent}.',
+      'marketplace.installing': 'Installation de {skill} pour {agent}...',
+      'marketplace.removing': 'Suppression de {skill} pour {agent}...',
+      'agents.add': 'Ajouter agent',
+      'agents.form.addTitle': 'Ajouter agent',
+      'agents.form.editTitle': 'Modifier agent',
+      'agents.form.closeAria': 'Fermer le formulaire agent',
+      'agents.form.pathLabel': 'Chemin agent',
+      'agents.form.pathPlaceholder': 'C:/Users/.../.roo/skills',
+      'agents.form.presetIconLabel': 'Icône prédéfinie',
+      'agents.form.customIconLabel': 'Icône personnalisée (glisser-déposer ou sélection fichier)',
+      'agents.form.dropzone': 'Dépose un fichier image ici, ou clique pour choisir.',
+      'agents.form.clearCustomIcon': 'Retirer l\'icône personnalisée',
+      'agents.form.save': 'Sauvegarder',
+      'agents.form.cancel': 'Annuler',
+      'agents.form.autoOption': 'Automatique (selon le nom agent)',
+      'agents.noneDeclared': 'Aucun agent déclaré.',
+      'agents.noSkill': 'Aucun skill',
+      'agents.skillsList': 'Skills : {skills}',
+      'agents.editAgent': 'Modifier cet agent',
+      'agents.removeAgent': 'Supprimer cet agent',
+      'settings.title': 'Paramètres',
+      'settings.languageLabel': 'Langue',
+      'settings.languageHint': 'La langue est sauvegardée automatiquement.',
+      'settings.languageSaved': 'Langue mise à jour.',
+      'language.name.en': 'Anglais',
+      'language.name.es': 'Espagnol',
+      'language.name.zh': 'Chinois',
+      'language.name.fr': 'Français',
+      'language.name.ar': 'Arabe',
+      'status.apiMissingMarketplace': 'Impossible de charger le marketplace : API VS Code introuvable.',
+      'status.apiMissingSave': 'Impossible de sauvegarder : API VS Code introuvable.',
+      'status.apiMissingRepoSave': 'Impossible de sauvegarder les sources : API VS Code introuvable.',
+      'status.pathsSaved': 'Paramètres sauvegardés.',
+      'status.reposSaved': 'Paramètres de source envoyés.',
+      'status.apiUnavailable': 'API VS Code introuvable.'
+    },
+    ar: {
+      'tab.marketplace': 'المتجر',
+      'tab.agents': 'الوكلاء',
+      'tab.settings': 'الإعدادات',
+      'marketplace.filterPlaceholder': 'تصفية المهارات (الاسم، المجال، الوصف)',
+      'marketplace.prev': 'السابق',
+      'marketplace.next': 'التالي',
+      'marketplace.pageLabel': 'الصفحة {page} / {total}',
+      'marketplace.noRepoConfigured': 'لا توجد مصادر مهيأة.',
+      'marketplace.noSkillDetected': 'لم يتم اكتشاف أي مهارات.',
+      'marketplace.noSkillForFilter': 'لا توجد مهارات تطابق عامل التصفية الحالي.',
+      'marketplace.countZero': 'تم تحميل 0 مهارة',
+      'marketplace.countFiltered': '{visible} / {total} مهارة',
+      'marketplace.countAll': '{total} مهارة',
+      'marketplace.agentInstalled': '{agent} - مثبت',
+      'marketplace.agentNotInstalled': '{agent} - غير مثبت',
+      'marketplace.agentPathMissing': 'تعذر العثور على المسار للوكيل {agent}.',
+      'marketplace.installing': 'جارٍ تثبيت {skill} للوكيل {agent}...',
+      'marketplace.removing': 'جارٍ إزالة {skill} من الوكيل {agent}...',
+      'agents.add': 'إضافة وكيل',
+      'agents.form.addTitle': 'إضافة وكيل',
+      'agents.form.editTitle': 'تعديل وكيل',
+      'agents.form.closeAria': 'إغلاق نموذج الوكيل',
+      'agents.form.pathLabel': 'مسار الوكيل',
+      'agents.form.pathPlaceholder': 'C:/Users/.../.roo/skills',
+      'agents.form.presetIconLabel': 'أيقونة جاهزة',
+      'agents.form.customIconLabel': 'أيقونة مخصصة (سحب وإفلات أو اختيار ملف)',
+      'agents.form.dropzone': 'أسقط ملف صورة هنا أو انقر للاختيار.',
+      'agents.form.clearCustomIcon': 'إزالة الأيقونة المخصصة',
+      'agents.form.save': 'حفظ',
+      'agents.form.cancel': 'إلغاء',
+      'agents.form.autoOption': 'تلقائي (حسب اسم الوكيل)',
+      'agents.noneDeclared': 'لا يوجد وكلاء معلنون.',
+      'agents.noSkill': 'لا توجد مهارات',
+      'agents.skillsList': 'المهارات: {skills}',
+      'agents.editAgent': 'تعديل هذا الوكيل',
+      'agents.removeAgent': 'حذف هذا الوكيل',
+      'settings.title': 'الإعدادات',
+      'settings.languageLabel': 'اللغة',
+      'settings.languageHint': 'يتم حفظ اللغة تلقائيًا.',
+      'settings.languageSaved': 'تم تحديث اللغة.',
+      'language.name.en': 'الإنجليزية',
+      'language.name.es': 'الإسبانية',
+      'language.name.zh': 'الصينية',
+      'language.name.fr': 'الفرنسية',
+      'language.name.ar': 'العربية',
+      'status.apiMissingMarketplace': 'تعذر تحميل المتجر: واجهة VS Code API غير متوفرة.',
+      'status.apiMissingSave': 'تعذر الحفظ: واجهة VS Code API غير متوفرة.',
+      'status.apiMissingRepoSave': 'تعذر حفظ المصادر: واجهة VS Code API غير متوفرة.',
+      'status.pathsSaved': 'تم حفظ الإعدادات.',
+      'status.reposSaved': 'تم إرسال إعدادات المصادر.',
+      'status.apiUnavailable': 'واجهة VS Code API غير متوفرة.'
+    }
+  };
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function normalizeLanguageCode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return SUPPORTED_LANGUAGES.includes(normalized) ? normalized : 'en';
+  }
+
+  function getCurrentLanguage() {
+    return normalizeLanguageCode(state.language);
+  }
+
+  function getCurrentLocale() {
+    const language = getCurrentLanguage();
+    return LOCALE_BY_LANGUAGE[language] || 'en-US';
+  }
+
+  function t(key, params) {
+    const language = getCurrentLanguage();
+    const dict = TRANSLATIONS[language] || TRANSLATIONS.en;
+    const fallback = TRANSLATIONS.en[key] || key;
+    const template = dict[key] || fallback;
+    return template.replace(/\{(\w+)\}/g, function (_, token) {
+      return params && Object.prototype.hasOwnProperty.call(params, token) ? String(params[token]) : '';
+    });
+  }
+
+  function formatNumber(value) {
+    return Number(value || 0).toLocaleString(getCurrentLocale());
+  }
+
+  function setText(id, key, params) {
+    const el = byId(id);
+    if (!el) {
+      return;
+    }
+    el.textContent = t(key, params);
+  }
+
+  function setPlaceholder(id, key) {
+    const el = byId(id);
+    if (!el) {
+      return;
+    }
+    el.setAttribute('placeholder', t(key));
+  }
+
+  function applyLanguageDirection() {
+    const language = getCurrentLanguage();
+    document.documentElement.setAttribute('lang', language);
+    document.documentElement.setAttribute('dir', RTL_LANGUAGES.has(language) ? 'rtl' : 'ltr');
+  }
+
+  function applyStaticTranslations() {
+    setText('tab-label-marketplace', 'tab.marketplace');
+    setText('tab-label-agents', 'tab.agents');
+    setText('tab-label-settings', 'tab.settings');
+
+    setPlaceholder('marketplace-filter', 'marketplace.filterPlaceholder');
+    setText('marketplace-prev', 'marketplace.prev');
+    setText('marketplace-next', 'marketplace.next');
+
+    setText('add-agent', 'agents.add');
+    setText('label-new-agent-path', 'agents.form.pathLabel');
+    setPlaceholder('new-agent-path', 'agents.form.pathPlaceholder');
+    setText('label-new-agent-icon-select', 'agents.form.presetIconLabel');
+    setText('label-new-agent-icon-file', 'agents.form.customIconLabel');
+    setText('agent-icon-dropzone', 'agents.form.dropzone');
+    setText('clear-agent-icon', 'agents.form.clearCustomIcon');
+    setText('save-agent', 'agents.form.save');
+    setText('cancel-agent', 'agents.form.cancel');
+
+    const closeButton = byId('close-agent-form');
+    if (closeButton) {
+      closeButton.setAttribute('aria-label', t('agents.form.closeAria'));
+    }
+
+    const languageSelect = byId('settings-language-select');
+    if (languageSelect) {
+      Array.from(languageSelect.options).forEach(function (option) {
+        option.textContent = t('language.name.' + option.value);
+      });
+      languageSelect.value = getCurrentLanguage();
+    }
+
+    setText('settings-section-title', 'settings.title');
+    setText('settings-language-label', 'settings.languageLabel');
+    setText('settings-language-hint', 'settings.languageHint');
+    setAgentFormTitle(editingAgentKey ? t('agents.form.editTitle') : t('agents.form.addTitle'));
+  }
+
+  function applyLanguageUi() {
+    applyLanguageDirection();
+    applyStaticTranslations();
   }
 
   function readAgentIconMap() {
@@ -51,7 +421,7 @@
 
   function loadMarketplacePage(page) {
     if (!vscode) {
-      setStatus('Impossible de charger le marketplace: API VS Code introuvable.', true);
+      setStatus(t('status.apiMissingMarketplace'), true);
       return;
     }
     const repos = Array.isArray(state.repos) ? state.repos : [];
@@ -75,7 +445,7 @@
     }
     form.hidden = true;
     editingAgentKey = '';
-    setAgentFormTitle('Ajouter agent');
+    setAgentFormTitle(t('agents.form.addTitle'));
     resetAgentForm();
   }
 
@@ -85,7 +455,7 @@
       return;
     }
     editingAgentKey = '';
-    setAgentFormTitle('Ajouter agent');
+    setAgentFormTitle(t('agents.form.addTitle'));
     populatePresetIconSelect();
     resetAgentForm();
     form.hidden = false;
@@ -142,7 +512,7 @@
     }
 
     editingAgentKey = normalizeAgentKey(normalizedPath);
-    setAgentFormTitle('Modifier agent');
+    setAgentFormTitle(t('agents.form.editTitle'));
     populatePresetIconSelect();
     resetAgentForm();
 
@@ -163,9 +533,10 @@
     pathInput.focus();
   }
 
-  function sendSaveSkillConfig() {
+  function sendSaveSkillConfig(options) {
+    const silent = options && options.silent;
     if (!vscode) {
-      setStatus('Impossible de sauvegarder: API VS Code introuvable.', true);
+      setStatus(t('status.apiMissingSave'), true);
       return;
     }
     const agents = Array.isArray(state.agents) ? state.agents : [];
@@ -186,31 +557,26 @@
       command: 'saveSkillConfig',
       data: {
         agents: cleanedAgents,
-        skillPaths: cleanedAgents.map((agent) => agent.path)
+        skillPaths: cleanedAgents.map((agent) => agent.path),
+        language: getCurrentLanguage()
       }
     });
-    setStatus('Sauvegarde des chemins envoyee.', false);
+    if (!silent) {
+      setStatus(t('status.pathsSaved'), false);
+    }
   }
 
   function sendSaveRepoConfig() {
     if (!vscode) {
-      setStatus('Impossible de sauvegarder: API VS Code introuvable.', true);
+      setStatus(t('status.apiMissingRepoSave'), true);
       return;
     }
     vscode.postMessage({ command: 'saveRepoConfig', data: { repos: state.repos } });
-    setStatus('Sauvegarde des repos envoyee.', false);
+    setStatus(t('status.reposSaved'), false);
   }
 
   function renderConfigPath() {
     // supprimé : plus d'affichage du chemin de config
-  }
-
-  function getAgentPathByKey(agentKey) {
-    if (!Array.isArray(state.agents)) {
-      return '';
-    }
-    const agent = state.agents.find((entry) => normalizeAgentKey(entry.path || '') === agentKey);
-    return agent && typeof agent.path === 'string' ? agent.path : '';
   }
 
   function normalizeAgentPath(value) {
@@ -486,7 +852,7 @@
       const edit = document.createElement('span');
       edit.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--vscode-foreground)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path></svg>';
       edit.style.cursor = 'pointer';
-      edit.title = 'Modifier cet agent';
+      edit.title = t('agents.editAgent');
       edit.addEventListener('click', function () {
         const targetAgent = (state.agents || []).find((entry) => normalizeAgentKey(entry.path || '') === agent)
           || { path: group.folder };
@@ -496,7 +862,7 @@
       const remove = document.createElement('span');
       remove.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c44" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="feather feather-trash"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
       remove.style.cursor = 'pointer';
-      remove.title = 'Supprimer cet agent';
+      remove.title = t('agents.removeAgent');
       remove.addEventListener('click', function () {
         state.agents = (state.agents || []).filter((entry) => normalizeAgentKey(entry.path || '') !== agent);
         state.skillPaths = state.agents.map((entry) => entry.path);
@@ -513,7 +879,9 @@
       const skills = (group.skills || []).map(s => s.name);
       const skillsDiv = document.createElement('div');
       skillsDiv.className = 'skill-card-subtitle';
-      skillsDiv.textContent = skills.length ? 'Skills : ' + skills.join(', ') : 'Aucun skill';
+      skillsDiv.textContent = skills.length
+        ? t('agents.skillsList', { skills: skills.join(', ') })
+        : t('agents.noSkill');
       card.appendChild(skillsDiv);
 
       // Ligne 3 : chemin dossier agent
@@ -531,7 +899,7 @@
       container.appendChild(card);
     });
     if (!state.installedSkills.length) {
-      container.textContent = 'Aucun agent déclaré.';
+      container.textContent = t('agents.noneDeclared');
     }
   }
 
@@ -557,7 +925,7 @@
     const totalPages = limit > 0 ? Math.ceil(totalSkillsCount / limit) : 1;
 
     if (pageLabel) {
-      pageLabel.textContent = `Page ${currentPage + 1} / ${totalPages}`;
+      pageLabel.textContent = t('marketplace.pageLabel', { page: currentPage + 1, total: totalPages || 1 });
     }
     if (prevButton) {
       prevButton.disabled = currentPage <= 0;
@@ -574,7 +942,7 @@
       repoContainer.appendChild(title);
     });
     if (!state.marketplaceSkills.length) {
-      repoContainer.textContent = 'Aucun repo configure.';
+      repoContainer.textContent = t('marketplace.noRepoConfigured');
     }
 
     skillsContainer.innerHTML = '';
@@ -586,7 +954,7 @@
       if (!filteredSkills.length) {
         const empty = document.createElement('div');
         empty.className = 'list-item';
-        empty.textContent = normalizedFilter ? 'Aucun skill ne correspond au filtre.' : 'Aucun skill detecte.';
+        empty.textContent = normalizedFilter ? t('marketplace.noSkillForFilter') : t('marketplace.noSkillDetected');
         skillsContainer.appendChild(empty);
         return;
       }
@@ -625,11 +993,13 @@
             img.src = resolveAgentDisplayIcon(agent);
             img.alt = agent;
             icon.appendChild(img);
-            icon.title = isInstalled ? (agent + ' - installé') : (agent + ' - non installé');
+            icon.title = isInstalled
+              ? t('marketplace.agentInstalled', { agent: agent })
+              : t('marketplace.agentNotInstalled', { agent: agent });
             icon.addEventListener('click', function () {
               const agentPath = getAgentPathByKey(agent);
               if (!agentPath) {
-                setStatus(`Chemin non trouvé pour l'agent ${agent}.`, true);
+                setStatus(t('marketplace.agentPathMissing', { agent: agent }), true);
                 return;
               }
               vscode.postMessage({
@@ -645,7 +1015,12 @@
                   limit
                 }
               });
-              setStatus(isInstalled ? `Suppression de ${skill.name} pour ${agent}...` : `Installation de ${skill.name} pour ${agent}...`, false);
+              setStatus(
+                isInstalled
+                  ? t('marketplace.removing', { skill: skill.name, agent: agent })
+                  : t('marketplace.installing', { skill: skill.name, agent: agent }),
+                false
+              );
             });
             row.appendChild(icon);
           });
@@ -657,18 +1032,21 @@
       });
     });
     if (!state.marketplaceSkills.length) {
-      skillsContainer.textContent = 'Aucun skill detecte.';
+      skillsContainer.textContent = t('marketplace.noSkillDetected');
     } else if (normalizedFilter && visibleSkillsCount === 0) {
-      skillsContainer.textContent = 'Aucun skill ne correspond au filtre saisi.';
+      skillsContainer.textContent = t('marketplace.noSkillForFilter');
     }
 
     if (countLabel) {
       if (!totalSkillsCount) {
-        countLabel.textContent = '0 skill chargé';
+        countLabel.textContent = t('marketplace.countZero');
       } else if (normalizedFilter) {
-        countLabel.textContent = `${visibleSkillsCount.toLocaleString('fr-FR')} / ${totalSkillsCount.toLocaleString('fr-FR')} skills`;
+        countLabel.textContent = t('marketplace.countFiltered', {
+          visible: formatNumber(visibleSkillsCount),
+          total: formatNumber(totalSkillsCount)
+        });
       } else {
-        countLabel.textContent = `${totalSkillsCount.toLocaleString('fr-FR')} skills`;
+        countLabel.textContent = t('marketplace.countAll', { total: formatNumber(totalSkillsCount) });
       }
     }
   }
@@ -736,9 +1114,11 @@
   }
 
   function updateUi(newState) {
-    state = newState || state;
+    state = Object.assign({}, state, newState || {});
+    state.language = normalizeLanguageCode(state.language);
     ensureAgentsStateSynced();
     state.customAgentIcons = buildCustomAgentIconMapFromAgents(state.agents);
+    applyLanguageUi();
     renderAgentCards();
     renderMarketplace();
   }
@@ -774,7 +1154,7 @@
     select.innerHTML = '';
     const autoOption = document.createElement('option');
     autoOption.value = '';
-    autoOption.textContent = 'Automatique (selon le nom agent)';
+    autoOption.textContent = t('agents.form.autoOption');
     select.appendChild(autoOption);
     getPresetIconKeys().forEach((key) => {
       const option = document.createElement('option');
@@ -838,6 +1218,22 @@
     if (marketplaceFilter) {
       marketplaceFilter.addEventListener('input', function () {
         refreshFilter();
+      });
+    }
+
+    const languageSelect = byId('settings-language-select');
+    if (languageSelect) {
+      languageSelect.addEventListener('change', function () {
+        const nextLanguage = normalizeLanguageCode(languageSelect.value);
+        if (nextLanguage === getCurrentLanguage()) {
+          return;
+        }
+        state.language = nextLanguage;
+        applyLanguageUi();
+        renderAgentCards();
+        renderMarketplace();
+        sendSaveSkillConfig({ silent: true });
+        setStatus(t('settings.languageSaved'), false);
       });
     }
 
@@ -1001,11 +1397,12 @@
   });
 
   bindActions();
+  applyLanguageUi();
 
   if (vscode) {
     setStatus('', false);
     vscode.postMessage({ command: 'loadState' });
   } else {
-    setStatus('', true);
+    setStatus(t('status.apiUnavailable'), true);
   }
 })();

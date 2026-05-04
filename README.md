@@ -1,10 +1,12 @@
 <p align="center">
-  <img src="resources/default.png" alt="Skills Hub Logo" width="120" />
+  <img src="https://github.com/evolutec/skills-hub-extension/raw/HEAD/resources/default.png" alt="Skills Hub Logo" width="120" />
 </p>
 
 # Skills Hub – VS Code Extension
 
 **Manage, visualize, and boost your agents and their skills in VS Code with a modern and intuitive experience.**
+
+Repository: [https://github.com/evolutec/skills-hub-extension](https://github.com/evolutec/skills-hub-extension)
 
 ---
 
@@ -32,7 +34,7 @@
 <table>
   <tr>
     <td width="68%" rowspan="3" valign="top">
-      <img src="resources/marketplace-cards.png" alt="Marketplace skill coverage example" width="100%" />
+      <img src="https://github.com/evolutec/skills-hub-extension/raw/HEAD/resources/marketplace-cards.png" alt="Marketplace skill coverage example" width="100%" />
     </td>
     <td width="32%" valign="middle" style="font-size: 1.03rem; line-height: 1.45; padding: 8px 10px;">
       <strong style="font-size: 1.08rem;">Top card - frontend-design</strong><br/>

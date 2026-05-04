@@ -9,9 +9,12 @@ interface AgentConfig {
   icon?: string;
 }
 
+type SupportedLanguage = 'en' | 'es' | 'zh' | 'fr' | 'ar';
+
 interface SkillsConfig {
   skillPaths: string[];
   agents: AgentConfig[];
+  language: SupportedLanguage;
 }
 
 interface RepoConfig {
@@ -51,6 +54,8 @@ export function deactivate() {
 class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   private static readonly CLAUDE_PLUGINS_PAGE_SIZE = 200;
   private static readonly CLAUDE_PLUGINS_CACHE_TTL_MS = 5 * 60 * 1000;
+  private static readonly DEFAULT_LANGUAGE: SupportedLanguage = 'en';
+  private static readonly SUPPORTED_LANGUAGES: SupportedLanguage[] = ['en', 'es', 'zh', 'fr', 'ar'];
   private claudePluginsCache?: {
     loadedAt: number;
     skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[];
@@ -150,7 +155,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     this.migrateLegacyConfigIfNeeded(configPath, repoPath);
 
     if (!fs.existsSync(configPath.fsPath)) {
-      fs.writeFileSync(configPath.fsPath, JSON.stringify({ skillPaths: [], agents: [] }, null, 2), 'utf8');
+      fs.writeFileSync(configPath.fsPath, JSON.stringify({ skillPaths: [], agents: [], language: SkillsHubViewProvider.DEFAULT_LANGUAGE }, null, 2), 'utf8');
     }
     if (!fs.existsSync(repoPath.fsPath)) {
       fs.writeFileSync(repoPath.fsPath, JSON.stringify({ repos: [] }, null, 2), 'utf8');
@@ -199,12 +204,23 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     return {
       skillPaths: config.skillPaths,
       agents: config.agents,
+      language: config.language,
       customAgentIcons: this.buildCustomAgentIcons(config.agents),
       repos: repoConfig.repos,
       configFolderPath: this.getConfigFolder().fsPath,
       installedSkills,
       marketplaceSkills
     };
+  }
+
+  private normalizeLanguage(input: unknown): SupportedLanguage {
+    if (typeof input !== 'string') {
+      return SkillsHubViewProvider.DEFAULT_LANGUAGE;
+    }
+    const normalized = input.trim().toLowerCase() as SupportedLanguage;
+    return SkillsHubViewProvider.SUPPORTED_LANGUAGES.includes(normalized)
+      ? normalized
+      : SkillsHubViewProvider.DEFAULT_LANGUAGE;
   }
 
   private normalizeAgentPath(input: string): string {
@@ -297,12 +313,14 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
       const parsed = JSON.parse(raw) as Partial<SkillsConfig>;
       const legacySkillPaths = Array.isArray(parsed.skillPaths) ? parsed.skillPaths : [];
       const agents = this.normalizeAgents(parsed.agents, legacySkillPaths);
+      const language = this.normalizeLanguage(parsed.language);
       return {
         agents,
-        skillPaths: agents.map((agent) => agent.path)
+        skillPaths: agents.map((agent) => agent.path),
+        language
       };
     } catch {
-      return { skillPaths: [], agents: [] };
+      return { skillPaths: [], agents: [], language: SkillsHubViewProvider.DEFAULT_LANGUAGE };
     }
   }
 
@@ -350,9 +368,11 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     const file = vscode.Uri.file(this.getConfigFile().fsPath);
     const legacySkillPaths = Array.isArray(data.skillPaths) ? data.skillPaths : [];
     const agents = this.normalizeAgents(data.agents, legacySkillPaths);
+    const language = this.normalizeLanguage(data.language);
     const payload: SkillsConfig = {
       skillPaths: agents.map((agent) => agent.path),
-      agents
+      agents,
+      language
     };
     fs.writeFileSync(file.fsPath, JSON.stringify(payload, null, 2), 'utf8');
   }
@@ -800,7 +820,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
 
 
     return `<!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src 'unsafe-inline' ${webview.cspSource}; img-src https: data: ${webview.cspSource};" />
@@ -947,6 +967,19 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     .marketplace-filter-wrap { margin-top: 8px; }
     .marketplace-filter-wrap input { margin-bottom: 0; }
     .marketplace-pagination { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 14px; margin-bottom: 14px; }
+    .settings-field {
+      max-width: 360px;
+      margin: 0 auto;
+    }
+    .settings-field label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    .status-text {
+      min-height: 1.2em;
+      padding: 0 16px 12px;
+    }
   </style>
 </head>
 <body>
@@ -955,20 +988,20 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   <input class="tab-toggle" type="radio" name="tabset" id="tab-settings" />
 
   <div class="tabs">
-    <label class="tab" for="tab-marketplace">Marketplace</label>
-    <label class="tab" for="tab-agents">Agents</label>
-    <label class="tab" for="tab-settings">Paramètres</label>
+    <label class="tab" id="tab-label-marketplace" for="tab-marketplace">Marketplace</label>
+    <label class="tab" id="tab-label-agents" for="tab-agents">Agents</label>
+    <label class="tab" id="tab-label-settings" for="tab-settings">Settings</label>
   </div>
 
   <div class="pane" id="pane-marketplace">
     <div class="section">
       <div class="marketplace-filter-wrap">
-        <input type="text" id="marketplace-filter" placeholder="Filtrer les skills (nom, namespace, description)" />
+        <input type="text" id="marketplace-filter" placeholder="Filter skills (name, namespace, description)" />
       </div>
       <div class="marketplace-pagination">
-        <button id="marketplace-prev" type="button">Précédent</button>
+        <button id="marketplace-prev" type="button">Previous</button>
         <span id="marketplace-page-label" class="small-text"></span>
-        <button id="marketplace-next" type="button">Suivant</button>
+        <button id="marketplace-next" type="button">Next</button>
       </div>
       <div id="marketplace-count" class="small-text"></div>
       <div id="marketplace-repos" class="list-box" style="display:none"></div>
@@ -981,29 +1014,29 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   <div class="pane" id="pane-agents">
     <div class="section">
       <div class="agent-add-controls">
-        <button id="add-agent">Ajouter agent</button>
+        <button id="add-agent">Add Agent</button>
       </div>
       <div id="agent-form" class="agent-form" hidden>
         <div class="agent-form-header">
-          <div id="agent-form-title" class="agent-form-title">Ajouter agent</div>
-          <button id="close-agent-form" class="agent-form-close" type="button" aria-label="Fermer le formulaire agent">✕</button>
+          <div id="agent-form-title" class="agent-form-title">Add Agent</div>
+          <button id="close-agent-form" class="agent-form-close" type="button" aria-label="Close agent form">✕</button>
         </div>
-        <label for="new-agent-path">Chemin agent</label>
+        <label id="label-new-agent-path" for="new-agent-path">Agent path</label>
         <input type="text" id="new-agent-path" placeholder="C:/Users/.../.roo/skills" />
-        <label for="new-agent-icon-select">Icône prédéfinie</label>
+        <label id="label-new-agent-icon-select" for="new-agent-icon-select">Preset icon</label>
         <select id="new-agent-icon-select"></select>
-        <label for="new-agent-icon-file">Icône personnalisée (glisser-déposer ou sélection fichier)</label>
-        <label id="agent-icon-dropzone" class="drop-zone" for="new-agent-icon-file">Dépose un fichier image ici, ou clique pour choisir.</label>
+        <label id="label-new-agent-icon-file" for="new-agent-icon-file">Custom icon (drag and drop or file picker)</label>
+        <label id="agent-icon-dropzone" class="drop-zone" for="new-agent-icon-file">Drop an image file here, or click to choose.</label>
         <input type="file" id="new-agent-icon-file" accept="image/*" hidden />
         <div class="drop-zone-actions">
-          <button id="clear-agent-icon" type="button">Retirer l’icône personnalisée</button>
+          <button id="clear-agent-icon" type="button">Remove custom icon</button>
         </div>
         <div class="agent-icon-preview-wrap">
-          <img id="new-agent-icon-preview" alt="Aperçu icône agent" />
+          <img id="new-agent-icon-preview" alt="Agent icon preview" />
         </div>
         <div class="agent-form-actions">
-          <button id="save-agent" type="button">Sauvegarder</button>
-          <button id="cancel-agent" type="button">Annuler</button>
+          <button id="save-agent" type="button">Save</button>
+          <button id="cancel-agent" type="button">Cancel</button>
         </div>
       </div>
       <div id="agent-cards" class="list-box"></div>
@@ -1012,13 +1045,24 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
 
   <div class="pane" id="pane-settings">
     <div class="section">
-      <label class="section-title">Paramètres</label>
+      <label class="section-title" id="settings-section-title">Settings</label>
       <div class="list-box">
-        <div class="small-text">Aucun paramètre supplémentaire pour le moment.</div>
+        <div class="settings-field">
+          <label id="settings-language-label" for="settings-language-select">Language</label>
+          <select id="settings-language-select">
+            <option value="en">English</option>
+            <option value="es">Español</option>
+            <option value="zh">中文</option>
+            <option value="fr">Français</option>
+            <option value="ar">العربية</option>
+          </select>
+          <div id="settings-language-hint" class="small-text">Language is saved automatically.</div>
+        </div>
       </div>
     </div>
   </div>
 
+  <div id="status-text" class="small-text status-text" aria-live="polite"></div>
   <div id="agent-icon-map" data-json="${serializedAgentIconMap}" hidden></div>
   <script src="${scriptUri}"></script>
 </body>
