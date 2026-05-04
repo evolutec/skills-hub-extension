@@ -12,24 +12,6 @@
     return document.getElementById(id);
   }
 
-  function readAgentIconMap() {
-    const holder = byId('agent-icon-map');
-    if (!holder) {
-      return {};
-    }
-    const raw = holder.getAttribute('data-json');
-    if (!raw) {
-      return {};
-    }
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return {};
-    }
-  }
-
-  const agentIconMap = readAgentIconMap();
-
   function setStatus(message, isError) {
     const status = byId('status-text');
     if (!status) {
@@ -66,21 +48,14 @@
     const normalizedIcon = String(icon).trim();
     if (normalizedIcon.startsWith('http')) return normalizedIcon;
     if (normalizedIcon.startsWith('data:')) return normalizedIcon;
-    if (normalizedIcon.startsWith('vscode-')) return normalizedIcon; // URI absolue déjà
-    if (normalizedIcon.startsWith('./')) return normalizedIcon; // Chemin relatif
-
-    const normalizedKey = normalizedIcon.toLowerCase().replace(/\\/g, '/');
+    const normalizedKey = normalizedIcon.toLowerCase();
     // Si c'est un chemin local, essayer de le résoudre via agentIconMap
-    if (agentIconMap && agentIconMap[normalizedKey]) {
-      return agentIconMap[normalizedKey];
-    }
+    if (agentIconMap && agentIconMap[normalizedKey]) return agentIconMap[normalizedKey];
     // Si c'est un chemin relatif resources/ ou /resources/
     if (normalizedKey.includes('resources/')) {
       const fileName = normalizedKey.split('/').pop().split('?')[0].split('#')[0];
       const key = fileName.replace(/\.(svg|png|jpe?g|gif|webp)$/i, '');
-      if (agentIconMap && agentIconMap[key]) {
-        return agentIconMap[key];
-      }
+      if (agentIconMap && agentIconMap[key]) return agentIconMap[key];
     }
     return agentIconMap && agentIconMap.default ? agentIconMap.default : '';
   }
@@ -100,7 +75,6 @@
     const container = byId('agent-cards');
     if (!container) return;
     container.innerHTML = '';
-
     const declaredAgents = getDeclaredAgents();
     state.installedSkills.forEach((group) => {
       const agent = normalizeAgentKey(group.folder);
@@ -123,7 +97,7 @@
       const iconDiv = document.createElement('div');
       iconDiv.className = 'agent-icon';
       const img = document.createElement('img');
-      img.src = resolveIconUrl(agent, agentIconMap);
+      img.src = resolveIconUrl(agent, window.agentIconMap);
       img.alt = agent;
       img.style.width = '32px';
       img.style.height = '32px';
@@ -238,7 +212,7 @@
         const iconEntry = (skill.entries || []).find((e) => isImageLikeString(e));
         if (iconEntry) {
           const img = document.createElement('img');
-          img.src = resolveIconUrl(iconEntry, agentIconMap);
+          img.src = resolveIconUrl(iconEntry, window.agentIconMap);
           img.alt = skill.name;
           img.style.width = '32px';
           img.style.height = '32px';
@@ -259,7 +233,7 @@
               icon.classList.add('installed');
             }
             const img = document.createElement('img');
-            img.src = resolveIconUrl(agent, agentIconMap);
+            img.src = resolveIconUrl(agent, window.agentIconMap);
             img.alt = agent;
             icon.appendChild(img);
             const label = document.createElement('div');

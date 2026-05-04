@@ -573,21 +573,37 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private escapeHtmlAttribute(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
   private getHtmlForWebview(webview: vscode.Webview): string {
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'webview.js'));
+
     const agentIconMap = {
       copilot: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'copilot.svg')).toString(),
       'kilo-code': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'kilo-code.svg')).toString(),
+      kilo: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'kilo-code.svg')).toString(),
+      kilocode: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'kilo-code.svg')).toString(),
       kade: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'kade.svg')).toString(),
       claude: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'claude.svg')).toString(),
       gemini: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'gemini.svg')).toString(),
-      'roo-code': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'roo-code.svg')).toString(),
+      'roo-code': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'roo.svg')).toString(),
       roo: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'roo.svg')).toString(),
       'cool-cline': webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'cool-cline.svg')).toString(),
       cline: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'cline.svg')).toString(),
       chatgpt: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'chatgpt.svg')).toString(),
       default: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'default.svg')).toString()
     };
+    const serializedAgentIconMap = this.escapeHtmlAttribute(JSON.stringify(agentIconMap));
+
+
+
     return `<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -636,13 +652,11 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <input class="tab-toggle" type="radio" name="tabset" id="tab-marketplace" checked />
-  <input class="tab-toggle" type="radio" name="tabset" id="tab-installed" />
   <input class="tab-toggle" type="radio" name="tabset" id="tab-settings" />
 
   <div class="tabs">
     <label class="tab" for="tab-marketplace">Marketplace</label>
-    <label class="tab" for="tab-installed">Installed</label>
-    <label class="tab" for="tab-settings">Settings</label>
+    <label class="tab" for="tab-settings">Paramètres</label>
   </div>
 
   <div class="pane" id="pane-marketplace">
@@ -656,39 +670,18 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <div class="pane" id="pane-installed">
-    <div class="section">
-      <label>Filtrer par dossier de skills</label>
-      <select id="installed-filter"></select>
-    </div>
-    <div class="section">
-      <label>Skills installés</label>
-      <div id="installed-skills" class="list-box"></div>
-    </div>
-  </div>
-
   <div class="pane" id="pane-settings">
     <div class="section">
-      <label>Chemins des dossiers /skills</label>
-      <div id="skill-paths" class="list-box"></div>
-      <input type="text" id="new-skill-path" placeholder="Ajouter un chemin de dossier..." />
-      <button id="add-skill-path">Ajouter chemin</button>
-    </div>
-    <div class="section">
-      <label>Source unique des skills : <a href="https://claude-plugins.dev/skills" target="_blank">claude-plugins.dev/skills</a></label>
-      <div id="repo-list" class="list-box" style="display:none"></div>
-      <input type="text" id="new-repo" style="display:none" />
-      <button id="add-repo" style="display:none">Ajouter repo</button>
-    </div>
-    <div class="section small-text">
-      <p id="config-location-text">Chargement du chemin de configuration...</p>
-      <p id="status-text">Initialisation...</p>
+      <label>Agents déclarés</label>
+      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+        <input type="text" id="new-agent-path" placeholder="Ajouter le chemin d'un agent..." style="flex:1;" />
+        <button id="add-agent">Ajouter agent</button>
+      </div>
+      <div id="agent-cards" class="list-box"></div>
     </div>
   </div>
 
-  <script>
-    const agentIconMap = ${JSON.stringify(agentIconMap)};
-  </script>
+  <div id="agent-icon-map" data-json="${serializedAgentIconMap}" hidden></div>
   <script src="${scriptUri}"></script>
 </body>
 </html>`;
