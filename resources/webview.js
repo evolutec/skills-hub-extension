@@ -331,9 +331,13 @@
         if (!input) {
           return;
         }
-        const value = input.value.trim();
+        let value = input.value.trim();
         if (!value) {
           return;
+        }
+        // Ajoute automatiquement /skills si ce n'est pas déjà la fin du chemin
+        if (!value.replace(/\\/g, '/').toLowerCase().endsWith('/skills')) {
+          value = value.replace(/\\/g, '/') + '/skills';
         }
         state.skillPaths.push(value);
         input.value = '';

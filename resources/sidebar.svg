@@ -1,4 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="currentColor">
-  <rect x="18" y="18" width="64" height="64" rx="14" ry="14" stroke="currentColor" stroke-width="10" fill="none" />
-  <path d="M34 40h32M34 52h32M34 64h22" stroke="currentColor" stroke-width="8" stroke-linecap="round" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <rect x="14" y="14" width="72" height="72" rx="17" stroke="currentColor" stroke-width="7" />
+  <circle cx="50" cy="50" r="24" stroke="currentColor" stroke-width="4" />
+
+  <path
+    d="M50 50L50 26M50 50L69 35M50 50L69 65M50 50L50 74M50 50L31 65M50 50L31 35"
+    stroke="currentColor"
+    stroke-width="4"
+    stroke-linecap="round"
+  />
+
+  <path
+    d="M50 20L74 32L74 68L50 80L26 68L26 32Z"
+    stroke="currentColor"
+    stroke-width="4"
+    stroke-linejoin="round"
+  />
+
+  <circle cx="50" cy="50" r="8" fill="currentColor" />
+  <circle cx="50" cy="20" r="4.5" fill="currentColor" />
+  <circle cx="74" cy="32" r="4.5" fill="currentColor" />
+  <circle cx="74" cy="68" r="4.5" fill="currentColor" />
+  <circle cx="50" cy="80" r="4.5" fill="currentColor" />
+  <circle cx="26" cy="68" r="4.5" fill="currentColor" />
+  <circle cx="26" cy="32" r="4.5" fill="currentColor" />
 </svg>

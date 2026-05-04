@@ -1,3 +1,10 @@
 {
-  "skillPaths": []
+  "skillPaths": [
+    "C:/Users/evolu/.roo/skills",
+    "C:/Users/evolu/.kilo/skills",
+    "C:/Users/evolu/.kilocode/skills",
+    "C:/Users/evolu/.cline/skills",
+    "C:/Users/evolu/.copilot/skills",
+    "C:/Users/evolu/.agents/skills"
+  ]
 }
