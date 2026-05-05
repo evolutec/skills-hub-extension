@@ -3,3 +3,5 @@ out/
 .vscode/
 *.vsix
 .kilocode/
+temp_vsix/
+temp.zip
