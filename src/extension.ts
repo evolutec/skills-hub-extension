@@ -60,6 +60,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     loadedAt: number;
     skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[];
   };
+  private marketplaceSkills: { name: string; path: string; entries: string[]; missingSkillMd: boolean; sourceUrl?: string }[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -109,7 +110,9 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
             const install = Boolean(message.data.install);
             if (skillName && agentPath) {
               if (install) {
-                await this.installSkillToAgent(agentPath, skillName);
+                const skill = this.marketplaceSkills.find(s => s.name === skillName);
+                const sourceUrl = skill?.sourceUrl || (skill && skill.entries[1] === 'Source: claude-plugins.dev' ? skill.entries[2] : undefined);
+                await this.installSkillToAgent(agentPath, skillName, sourceUrl);
               } else {
                 await this.uninstallSkillFromAgent(agentPath, skillName);
               }
@@ -335,7 +338,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async installSkillToAgent(agentPath: string, skillName: string) {
+  private async installSkillToAgent(agentPath: string, skillName: string, sourceUrl?: string) {
     try {
       const normalizedAgentPath = this.normalizeAgentPath(agentPath);
       const skillDir = path.join(normalizedAgentPath, skillName);
@@ -344,7 +347,25 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
       }
       fs.mkdirSync(skillDir, { recursive: true });
       const skillMdPath = path.join(skillDir, 'SKILL.md');
-      fs.writeFileSync(skillMdPath, `# ${skillName}\n\nSkill installée via Skills Hub.`, 'utf8');
+
+      let skillMdContent = `# ${skillName}\n\nSkill installée via Skills Hub.`;
+
+      if (sourceUrl) {
+        try {
+          const parsed = this.parseGithubRepo(sourceUrl);
+          if (parsed) {
+            // Try to fetch SKILL.md from the repo
+            const content = await this.fetchGithubFileContent(parsed.owner, parsed.name, parsed.path ? `${parsed.path}/SKILL.md` : 'SKILL.md', parsed.ref);
+            if (content) {
+              skillMdContent = content;
+            }
+          }
+        } catch {
+          // Fall back to default content
+        }
+      }
+
+      fs.writeFileSync(skillMdPath, skillMdContent, 'utf8');
     } catch {
       // ignore errors
     }
@@ -474,7 +495,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async loadMarketplaceSkills(repos: string[], page = 0, limit = SkillsHubViewProvider.CLAUDE_PLUGINS_PAGE_SIZE) {
-    const result: { repo: string; skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[]; total: number; page: number; limit: number }[] = [];
+    const result: { repo: string; skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean; sourceUrl?: string }[]; total: number; page: number; limit: number }[] = [];
     for (const repo of repos) {
       try {
         if (this.isClaudePluginsSource(repo)) {
@@ -500,6 +521,8 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
         if (!skills.length) {
           result.push({ repo, skills: [{ name: '', path: '', entries: ['Aucun skill détecté dans le repo'], missingSkillMd: true }], total: 0, page: 0, limit: 0 });
         } else {
+          // Add sourceUrl to skills
+          skills = skills.map(s => ({ ...s, sourceUrl: repo }));
           result.push({ repo, skills, total: skills.length, page: 0, limit: skills.length });
         }
       } catch (error) {
@@ -512,6 +535,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
         });
       }
     }
+    this.marketplaceSkills = result.flatMap(r => r.skills);
     return result;
   }
 
@@ -532,6 +556,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
         name: skill.name,
         path: skill.namespace,
         description: typeof skill.description === 'string' ? skill.description : '',
+        sourceUrl: skill.sourceUrl,
         entries: [
           skill.description || '',
           `Source: claude-plugins.dev`,
@@ -763,20 +788,60 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
         res.on('data', (chunk) => { body += chunk; });
         res.on('end', () => {
           try {
-            const json = JSON.parse(body) as { message?: string } | any[];
+            const json = JSON.parse(body) as { message?: string } | any[] | any;
             if (res.statusCode && res.statusCode >= 400) {
-              if (Array.isArray(json)) {
-                reject(new Error(`HTTP ${res.statusCode}`));
-                return;
-              }
               const message = json.message ? `HTTP ${res.statusCode} - ${json.message}` : `HTTP ${res.statusCode}`;
               reject(new Error(message));
               return;
             }
             if (Array.isArray(json)) {
               resolve(json);
+            } else if (json && typeof json === 'object') {
+              // It's a file object
+              resolve([json]);
             } else {
               resolve([]);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  private async fetchGithubFileContent(owner: string, repo: string, filePath: string, ref = ''): Promise<string | null> {
+    const pathSegment = '/' + filePath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+    const refSegment = ref ? `?ref=${encodeURIComponent(ref)}` : '';
+    const options = {
+      hostname: 'api.github.com',
+      port: 443,
+      path: `/repos/${owner}/${repo}/contents${pathSegment}${refSegment}`,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'vscode-skills-hub-extension',
+        Accept: 'application/vnd.github.v3+json'
+      }
+    };
+
+    return new Promise((resolve, reject) => {
+      const req = https.request(options, (res) => {
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(body) as { message?: string; content?: string; encoding?: string };
+            if (res.statusCode && res.statusCode >= 400) {
+              const message = json.message ? `HTTP ${res.statusCode} - ${json.message}` : `HTTP ${res.statusCode}`;
+              reject(new Error(message));
+              return;
+            }
+            if (json.content && json.encoding === 'base64') {
+              resolve(Buffer.from(json.content, 'base64').toString('utf8'));
+            } else {
+              resolve(null);
             }
           } catch (err) {
             reject(err);
@@ -932,7 +997,7 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     .skill-card-subtitle { color: var(--vscode-descriptionForeground); font-size: 0.92em; margin-bottom: 12px; }
     .agent-icons { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
     .agent-icon { display: flex; flex-direction: column; justify-content: center; align-items: center; width: 52px; font-size: 0.75em; color: var(--vscode-descriptionForeground); cursor: pointer; }
-    .agent-icon img { width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-background); }
+    .agent-icon img { width: 34px; height: 34px; border-radius: 10px; border: 1px solid white; background: var(--vscode-editor-background); }
     .agent-icon.installed img { border-color: #4eb85e; box-shadow: 0 0 0 2px rgba(78, 184, 94, 0.18); }
     .install-button { display: none; }
     .skill-tree { font-family: var(--vscode-editor-font-family); white-space: pre; margin: 0; color: var(--vscode-foreground); }
