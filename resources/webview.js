@@ -9,6 +9,8 @@
   let state = { skillPaths: [], agents: [], customAgentIcons: {}, repos: [], installedSkills: [], marketplaceSkills: [], marketplacePage: 0, marketplaceLimit: 50, marketplaceTotal: 0, configFolderPath: '', language: 'en' };
   let pendingCustomIcon = '';
   let editingAgentKey = '';
+  let marketplaceHoverLock = false;
+  let marketplaceRenderPending = false;
   const SUPPORTED_LANGUAGES = ['en', 'es', 'zh', 'fr', 'ar'];
   const RTL_LANGUAGES = new Set(['ar']);
   const LOCALE_BY_LANGUAGE = {
@@ -19,12 +21,28 @@
     ar: 'ar'
   };
 
+  const COMMON_AGENT_PRESETS = [
+    { value: 'copilot', label: 'Copilot', icon: 'copilot' },
+    { value: 'claude', label: 'Claude', icon: 'claude' },
+    { value: 'cline', label: 'Cline', icon: 'cline' },
+    { value: 'roo', label: 'Roo', icon: 'roo' },
+    { value: 'kilo', label: 'Kilo Code', icon: 'kilo-code' },
+    { value: 'gemini', label: 'Gemini', icon: 'gemini' },
+    { value: 'chatgpt', label: 'ChatGPT', icon: 'chatgpt' }
+  ];
+
+  const COMMON_AGENT_LABEL_BY_VALUE = COMMON_AGENT_PRESETS.reduce(function (acc, preset) {
+    acc[preset.value] = preset.label;
+    return acc;
+  }, {});
+
   const TRANSLATIONS = {
     en: {
       'tab.marketplace': 'Marketplace',
       'tab.agents': 'Agents',
       'tab.settings': 'Settings',
       'marketplace.filterPlaceholder': 'Filter skills (name, namespace, description)',
+      'marketplace.clearFilter': 'Clear filter',
       'marketplace.prev': 'Previous',
       'marketplace.next': 'Next',
       'marketplace.pageLabel': 'Page {page} / {total}',
@@ -39,10 +57,15 @@
       'marketplace.agentPathMissing': 'Path not found for agent {agent}.',
       'marketplace.installing': 'Installing {skill} for {agent}...',
       'marketplace.removing': 'Removing {skill} for {agent}...',
+      'marketplace.openSkillPage': 'Open skill page',
       'agents.add': 'Add Agent',
       'agents.form.addTitle': 'Add Agent',
       'agents.form.editTitle': 'Edit Agent',
       'agents.form.closeAria': 'Close agent form',
+      'agents.form.typeLabel': 'Agent type',
+      'agents.form.typeCustom': 'Custom agent',
+      'agents.form.nameLabel': 'Agent name',
+      'agents.form.namePlaceholder': 'My custom agent',
       'agents.form.pathLabel': 'Agent path',
       'agents.form.pathPlaceholder': 'C:/Users/.../.roo/skills',
       'agents.form.presetIconLabel': 'Preset icon',
@@ -78,6 +101,7 @@
       'tab.agents': 'Agentes',
       'tab.settings': 'Configuración',
       'marketplace.filterPlaceholder': 'Filtrar skills (nombre, namespace, descripción)',
+      'marketplace.clearFilter': 'Limpiar filtro',
       'marketplace.prev': 'Anterior',
       'marketplace.next': 'Siguiente',
       'marketplace.pageLabel': 'Página {page} / {total}',
@@ -131,6 +155,7 @@
       'tab.agents': '代理',
       'tab.settings': '设置',
       'marketplace.filterPlaceholder': '筛选技能（名称、命名空间、描述）',
+      'marketplace.clearFilter': '清除筛选',
       'marketplace.prev': '上一页',
       'marketplace.next': '下一页',
       'marketplace.pageLabel': '第 {page} / {total} 页',
@@ -184,6 +209,7 @@
       'tab.agents': 'Agents',
       'tab.settings': 'Paramètres',
       'marketplace.filterPlaceholder': 'Filtrer les skills (nom, namespace, description)',
+      'marketplace.clearFilter': 'Effacer le filtre',
       'marketplace.prev': 'Précédent',
       'marketplace.next': 'Suivant',
       'marketplace.pageLabel': 'Page {page} / {total}',
@@ -237,6 +263,7 @@
       'tab.agents': 'الوكلاء',
       'tab.settings': 'الإعدادات',
       'marketplace.filterPlaceholder': 'تصفية المهارات (الاسم، المجال، الوصف)',
+      'marketplace.clearFilter': 'مسح عامل التصفية',
       'marketplace.prev': 'السابق',
       'marketplace.next': 'التالي',
       'marketplace.pageLabel': 'الصفحة {page} / {total}',
@@ -347,10 +374,19 @@
     setText('tab-label-settings', 'tab.settings');
 
     setPlaceholder('marketplace-filter', 'marketplace.filterPlaceholder');
+    const marketplaceClearButton = byId('marketplace-filter-clear');
+    if (marketplaceClearButton) {
+      const clearLabel = t('marketplace.clearFilter');
+      marketplaceClearButton.setAttribute('aria-label', clearLabel);
+      marketplaceClearButton.setAttribute('title', clearLabel);
+    }
     setText('marketplace-prev', 'marketplace.prev');
     setText('marketplace-next', 'marketplace.next');
 
     setText('add-agent', 'agents.add');
+    setText('label-new-agent-kind', 'agents.form.typeLabel');
+    setText('label-new-agent-name', 'agents.form.nameLabel');
+    setPlaceholder('new-agent-name', 'agents.form.namePlaceholder');
     setText('label-new-agent-path', 'agents.form.pathLabel');
     setPlaceholder('new-agent-path', 'agents.form.pathPlaceholder');
     setText('label-new-agent-icon-select', 'agents.form.presetIconLabel');
@@ -377,6 +413,8 @@
     setText('settings-language-label', 'settings.languageLabel');
     setText('settings-language-hint', 'settings.languageHint');
     setAgentFormTitle(editingAgentKey ? t('agents.form.editTitle') : t('agents.form.addTitle'));
+    populateAgentTypeSelect();
+    updateMarketplaceFilterClearVisibility();
   }
 
   function applyLanguageUi() {
@@ -411,12 +449,110 @@
     status.style.color = isError ? '#f14c4c' : '';
   }
 
-  function getAgentPathByKey(agentKey) {
-    if (!Array.isArray(state.agents)) {
-      return '';
+  function getCommonAgentPresetByValue(value) {
+    return COMMON_AGENT_PRESETS.find((preset) => preset.value === value) || null;
+  }
+
+  function getCommonAgentPresetFromKey(agentKey) {
+    const normalized = String(agentKey || '').trim().toLowerCase();
+    if (!normalized) {
+      return null;
     }
-    const agent = state.agents.find((entry) => normalizeAgentKey(entry.path || '') === agentKey);
-    return agent && typeof agent.path === 'string' ? agent.path : '';
+    const aliases = {
+      'roo-code': 'roo',
+      kilocode: 'kilo',
+      'kilo-code': 'kilo'
+    };
+    const mapped = aliases[normalized] || normalized;
+    return getCommonAgentPresetByValue(mapped);
+  }
+
+  function getCommonAgentPresetFromAgent(agent) {
+    const path = normalizeAgentPath(agent && agent.path ? agent.path : '');
+    const byPath = getCommonAgentPresetFromKey(normalizeAgentKey(path));
+    if (byPath) {
+      return byPath;
+    }
+
+    const rawName = agent && typeof agent.name === 'string' ? agent.name.trim().toLowerCase() : '';
+    if (!rawName) {
+      return null;
+    }
+    return COMMON_AGENT_PRESETS.find((preset) => preset.label.toLowerCase() === rawName) || null;
+  }
+
+  function getAgentDisplayName(agent) {
+    if (agent && typeof agent.name === 'string' && agent.name.trim()) {
+      return agent.name.trim();
+    }
+    const fallbackKey = normalizeAgentKey(agent && agent.path ? agent.path : '');
+    const commonPreset = getCommonAgentPresetFromKey(fallbackKey);
+    return commonPreset ? commonPreset.label : fallbackKey;
+  }
+
+  function getAgentByPath(folderPath) {
+    if (!Array.isArray(state.agents)) {
+      return null;
+    }
+    const normalizedFolder = normalizeAgentPath(folderPath || '');
+    return state.agents.find((entry) => normalizeAgentPath(entry.path || '') === normalizedFolder) || null;
+  }
+
+  function populateAgentTypeSelect() {
+    const select = byId('new-agent-kind');
+    if (!select) {
+      return;
+    }
+
+    const current = select.value;
+    select.innerHTML = '';
+
+    COMMON_AGENT_PRESETS.forEach(function (preset) {
+      const option = document.createElement('option');
+      option.value = preset.value;
+      option.textContent = preset.label;
+      select.appendChild(option);
+    });
+
+    const customOption = document.createElement('option');
+    customOption.value = 'custom';
+    customOption.textContent = t('agents.form.typeCustom');
+    select.appendChild(customOption);
+
+    if ([...select.options].some((option) => option.value === current)) {
+      select.value = current;
+    } else {
+      select.value = 'copilot';
+    }
+
+    updateAgentTypeUi();
+  }
+
+  function updateAgentTypeUi() {
+    const typeSelect = byId('new-agent-kind');
+    const nameWrap = byId('new-agent-name-wrap');
+    const nameInput = byId('new-agent-name');
+    const iconSelect = byId('new-agent-icon-select');
+    if (!typeSelect || !nameWrap || !nameInput || !iconSelect) {
+      return;
+    }
+
+    const selectedType = typeSelect.value;
+    const custom = selectedType === 'custom';
+    nameWrap.hidden = !custom;
+    nameInput.disabled = !custom;
+
+    if (!custom) {
+      const preset = getCommonAgentPresetByValue(selectedType);
+      if (preset) {
+        nameInput.value = preset.label;
+        if (!pendingCustomIcon && [...iconSelect.options].some((option) => option.value === preset.icon)) {
+          iconSelect.value = preset.icon;
+        }
+      }
+    }
+
+    updateAgentIconPreview();
   }
 
   function loadMarketplacePage(page) {
@@ -457,6 +593,7 @@
     editingAgentKey = '';
     setAgentFormTitle(t('agents.form.addTitle'));
     populatePresetIconSelect();
+    populateAgentTypeSelect();
     resetAgentForm();
     form.hidden = false;
     const pathInput = byId('new-agent-path');
@@ -502,7 +639,9 @@
     const form = byId('agent-form');
     const pathInput = byId('new-agent-path');
     const select = byId('new-agent-icon-select');
-    if (!form || !pathInput || !select) {
+    const typeSelect = byId('new-agent-kind');
+    const nameInput = byId('new-agent-name');
+    if (!form || !pathInput || !select || !typeSelect || !nameInput) {
       return;
     }
 
@@ -514,9 +653,15 @@
     editingAgentKey = normalizeAgentKey(normalizedPath);
     setAgentFormTitle(t('agents.form.editTitle'));
     populatePresetIconSelect();
+    populateAgentTypeSelect();
     resetAgentForm();
 
     pathInput.value = normalizedPath;
+
+    const commonPreset = getCommonAgentPresetFromAgent(agent);
+    typeSelect.value = commonPreset ? commonPreset.value : 'custom';
+    nameInput.value = agent && typeof agent.name === 'string' ? agent.name.trim() : '';
+    updateAgentTypeUi();
 
     const iconValue = agent && typeof agent.icon === 'string' ? agent.icon.trim() : '';
     if (iconValue) {
@@ -550,7 +695,15 @@
           return null;
         }
         const icon = typeof agent.icon === 'string' && agent.icon.trim() ? agent.icon.trim() : undefined;
-        return icon ? { path: normalizedPath, icon } : { path: normalizedPath };
+        const name = typeof agent.name === 'string' && agent.name.trim() ? agent.name.trim() : undefined;
+        const payload = { path: normalizedPath };
+        if (icon) {
+          payload.icon = icon;
+        }
+        if (name) {
+          payload.name = name;
+        }
+        return payload;
       })
       .filter(Boolean);
     vscode.postMessage({
@@ -805,6 +958,48 @@
     return '';
   }
 
+  function getMarketplaceSkillUrl(skill) {
+    if (skill && typeof skill.sourceUrl === 'string' && /^https?:\/\//i.test(skill.sourceUrl.trim())) {
+      return skill.sourceUrl.trim();
+    }
+
+    if (skill && Array.isArray(skill.entries)) {
+      for (const entry of skill.entries) {
+        if (typeof entry === 'string' && /^https?:\/\//i.test(entry.trim())) {
+          return entry.trim();
+        }
+      }
+    }
+
+    return '';
+  }
+
+  function buildMarketplaceSkillKey(skill) {
+    if (!skill || typeof skill !== 'object') {
+      return '';
+    }
+    const byName = normalizeSkillToken(skill.name || '');
+    if (byName) {
+      return byName;
+    }
+    const byPath = normalizeSkillToken(skill.path || '');
+    if (byPath) {
+      return byPath;
+    }
+    return normalizeSkillToken(getMarketplaceSkillUrl(skill));
+  }
+
+  function openExternalUrl(url) {
+    if (!url) {
+      return;
+    }
+    if (vscode) {
+      vscode.postMessage({ command: 'openExternal', data: { url: url } });
+      return;
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
   function renderAgentCards() {
     const container = byId('agent-cards');
     if (!container) return;
@@ -812,8 +1007,11 @@
     ensureAgentsStateSynced();
 
     state.installedSkills.forEach((group) => {
-      const agent = normalizeAgentKey(group.folder);
-      if (!agent) return;
+      const normalizedFolderPath = normalizeAgentPath(group.folder || '');
+      const agent = getAgentByPath(normalizedFolderPath) || { path: normalizedFolderPath };
+      const agentKey = normalizeAgentKey(agent.path || normalizedFolderPath);
+      if (!agentKey) return;
+      const agentLabel = getAgentDisplayName(agent);
       const card = document.createElement('div');
       card.className = 'skill-card';
       card.style.display = 'flex';
@@ -832,8 +1030,8 @@
       const iconDiv = document.createElement('div');
       iconDiv.className = 'agent-icon';
       const img = document.createElement('img');
-      img.src = resolveAgentDisplayIcon(agent);
-      img.alt = agent;
+      img.src = resolveAgentDisplayIcon(agentKey);
+      img.alt = agentLabel;
       img.style.width = '32px';
       img.style.height = '32px';
       iconDiv.appendChild(img);
@@ -841,7 +1039,7 @@
 
       const agentName = document.createElement('div');
       agentName.className = 'skill-card-title';
-      agentName.textContent = agent;
+      agentName.textContent = agentLabel;
       header.appendChild(agentName);
 
       const actions = document.createElement('div');
@@ -854,7 +1052,7 @@
       edit.style.cursor = 'pointer';
       edit.title = t('agents.editAgent');
       edit.addEventListener('click', function () {
-        const targetAgent = (state.agents || []).find((entry) => normalizeAgentKey(entry.path || '') === agent)
+        const targetAgent = (state.agents || []).find((entry) => normalizeAgentKey(entry.path || '') === agentKey)
           || { path: group.folder };
         openAgentFormForEdit(targetAgent);
       });
@@ -864,7 +1062,7 @@
       remove.style.cursor = 'pointer';
       remove.title = t('agents.removeAgent');
       remove.addEventListener('click', function () {
-        state.agents = (state.agents || []).filter((entry) => normalizeAgentKey(entry.path || '') !== agent);
+        state.agents = (state.agents || []).filter((entry) => normalizeAgentKey(entry.path || '') !== agentKey);
         state.skillPaths = state.agents.map((entry) => entry.path);
         state.customAgentIcons = buildCustomAgentIconMapFromAgents(state.agents);
         sendSaveSkillConfig();
@@ -904,6 +1102,7 @@
   }
 
   function renderMarketplace() {
+    marketplaceRenderPending = false;
     const repoContainer = byId('marketplace-repos');
     const skillsContainer = byId('marketplace-skills');
     const countLabel = byId('marketplace-count');
@@ -934,34 +1133,76 @@
       nextButton.disabled = currentPage >= totalPages - 1;
     }
 
+    const marketplaceGroups = Array.isArray(state.marketplaceSkills) ? state.marketplaceSkills : [];
+
     repoContainer.innerHTML = '';
-    state.marketplaceSkills.forEach((repoGroup) => {
+    marketplaceGroups.forEach((repoGroup) => {
       const title = document.createElement('div');
       title.className = 'folder-title';
       title.textContent = repoGroup.repo;
       repoContainer.appendChild(title);
     });
-    if (!state.marketplaceSkills.length) {
+    if (!marketplaceGroups.length) {
       repoContainer.textContent = t('marketplace.noRepoConfigured');
     }
 
     skillsContainer.innerHTML = '';
-    let visibleSkillsCount = 0;
-    state.marketplaceSkills.forEach((repoGroup) => {
-      const allNamedSkills = (repoGroup.skills || []).filter((skill) => skill && skill.name);
-      const filteredSkills = allNamedSkills.filter((skill) => skillMatchesFilter(skill, normalizedFilter));
+    const allNamedSkills = marketplaceGroups.flatMap(function (repoGroup) {
+      return (repoGroup.skills || []).filter(function (skill) {
+        return skill && skill.name;
+      });
+    });
 
-      if (!filteredSkills.length) {
-        const empty = document.createElement('div');
-        empty.className = 'list-item';
-        empty.textContent = normalizedFilter ? t('marketplace.noSkillForFilter') : t('marketplace.noSkillDetected');
-        skillsContainer.appendChild(empty);
+    const seenSkillKeys = new Set();
+    const displaySkills = [];
+    allNamedSkills.forEach(function (skill) {
+      const dedupKey = buildMarketplaceSkillKey(skill);
+      if (dedupKey && seenSkillKeys.has(dedupKey)) {
         return;
       }
 
-      filteredSkills.forEach((skill) => {
+      if (!skillMatchesFilter(skill, normalizedFilter)) {
+        return;
+      }
+
+      if (dedupKey) {
+        seenSkillKeys.add(dedupKey);
+      }
+
+      const marketplaceSkillKeys = buildSkillMatchKeys(skill);
+      const installedOnAtLeastOneAgent = declaredAgents.some(function (agent) {
+        return hasSkillMatch(installedByAgent[agent.key], marketplaceSkillKeys);
+      });
+
+      displaySkills.push({
+        skill: skill,
+        marketplaceSkillKeys: marketplaceSkillKeys,
+        installedOnAtLeastOneAgent: installedOnAtLeastOneAgent
+      });
+    });
+
+    displaySkills.sort(function (a, b) {
+      if (a.installedOnAtLeastOneAgent !== b.installedOnAtLeastOneAgent) {
+        return a.installedOnAtLeastOneAgent ? -1 : 1;
+      }
+      return String(a.skill.name || '').localeCompare(String(b.skill.name || ''), undefined, { sensitivity: 'base' });
+    });
+
+    let visibleSkillsCount = 0;
+    displaySkills.forEach((entry) => {
+        const skill = entry.skill;
+        const marketplaceSkillKeys = entry.marketplaceSkillKeys;
         const card = document.createElement('div');
         card.className = 'skill-card';
+        card.addEventListener('mouseenter', function () {
+          marketplaceHoverLock = true;
+        });
+        card.addEventListener('mouseleave', function () {
+          marketplaceHoverLock = false;
+          if (marketplaceRenderPending) {
+            requestMarketplaceRender();
+          }
+        });
 
         const title = document.createElement('div');
         title.className = 'skill-card-title';
@@ -976,13 +1217,25 @@
           card.appendChild(subtitle);
         }
 
-        const marketplaceSkillKeys = buildSkillMatchKeys(skill);
+        const skillUrl = getMarketplaceSkillUrl(skill);
+        if (skillUrl) {
+          const link = document.createElement('button');
+          link.type = 'button';
+          link.className = 'skill-page-link';
+          link.textContent = t('marketplace.openSkillPage');
+          link.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            openExternalUrl(skillUrl);
+          });
+          card.appendChild(link);
+        }
 
         if (declaredAgents.length) {
           const row = document.createElement('div');
           row.className = 'agent-icons';
           declaredAgents.forEach((agent) => {
-            const isInstalled = hasSkillMatch(installedByAgent[agent], marketplaceSkillKeys);
+            const isInstalled = hasSkillMatch(installedByAgent[agent.key], marketplaceSkillKeys);
             const icon = document.createElement('div');
             icon.className = 'agent-icon';
             if (isInstalled) {
@@ -990,35 +1243,61 @@
             }
             icon.style.cursor = 'pointer';
             const img = document.createElement('img');
-            img.src = resolveAgentDisplayIcon(agent);
-            img.alt = agent;
+            img.src = resolveAgentDisplayIcon(agent.key);
+            img.alt = agent.label;
             icon.appendChild(img);
             icon.title = isInstalled
-              ? t('marketplace.agentInstalled', { agent: agent })
-              : t('marketplace.agentNotInstalled', { agent: agent });
+              ? t('marketplace.agentInstalled', { agent: agent.label })
+              : t('marketplace.agentNotInstalled', { agent: agent.label });
             icon.addEventListener('click', function () {
-              const agentPath = getAgentPathByKey(agent);
-              if (!agentPath) {
-                setStatus(t('marketplace.agentPathMissing', { agent: agent }), true);
+              const currentlyInstalled = icon.classList.contains('installed');
+              const nextInstalled = !currentlyInstalled;
+
+              // Apply immediate visual feedback while card reordering remains deferred on hover.
+              if (nextInstalled) {
+                icon.classList.add('installed');
+              } else {
+                icon.classList.remove('installed');
+              }
+              icon.title = nextInstalled
+                ? t('marketplace.agentInstalled', { agent: agent.label })
+                : t('marketplace.agentNotInstalled', { agent: agent.label });
+
+              if (!vscode) {
+                if (currentlyInstalled) {
+                  icon.classList.add('installed');
+                } else {
+                  icon.classList.remove('installed');
+                }
+                setStatus(t('status.apiUnavailable'), true);
+                return;
+              }
+              if (!agent.path) {
+                if (currentlyInstalled) {
+                  icon.classList.add('installed');
+                } else {
+                  icon.classList.remove('installed');
+                }
+                setStatus(t('marketplace.agentPathMissing', { agent: agent.label }), true);
                 return;
               }
               vscode.postMessage({
                 command: 'toggleMarketplaceSkill',
                 data: {
-                  agentPath,
-                  agentKey: agent,
+                  agentPath: agent.path,
+                  agentKey: agent.key,
                   skillName: skill.name,
                   skillPath: skill.path,
-                  install: !isInstalled,
+                  install: nextInstalled,
                   repos: state.repos,
                   page: currentPage,
                   limit
                 }
               });
               setStatus(
-                isInstalled
-                  ? t('marketplace.removing', { skill: skill.name, agent: agent })
-                  : t('marketplace.installing', { skill: skill.name, agent: agent }),
+                currentlyInstalled
+                  ? t('marketplace.removing', { skill: skill.name, agent: agent.label })
+                  : t('marketplace.installing', { skill: skill.name, agent: agent.label }),
                 false
               );
             });
@@ -1029,18 +1308,19 @@
 
         skillsContainer.appendChild(card);
         visibleSkillsCount += 1;
-      });
     });
-    if (!state.marketplaceSkills.length) {
+
+    const hasActiveFilter = Boolean(normalizedFilter);
+    if (!marketplaceGroups.length) {
       skillsContainer.textContent = t('marketplace.noSkillDetected');
-    } else if (normalizedFilter && visibleSkillsCount === 0) {
+    } else if (hasActiveFilter && visibleSkillsCount === 0) {
       skillsContainer.textContent = t('marketplace.noSkillForFilter');
     }
 
     if (countLabel) {
       if (!totalSkillsCount) {
         countLabel.textContent = t('marketplace.countZero');
-      } else if (normalizedFilter) {
+      } else if (hasActiveFilter) {
         countLabel.textContent = t('marketplace.countFiltered', {
           visible: formatNumber(visibleSkillsCount),
           total: formatNumber(totalSkillsCount)
@@ -1056,6 +1336,26 @@
   }
 
   function refreshFilter() {
+    updateMarketplaceFilterClearVisibility();
+    renderMarketplace();
+  }
+
+  function updateMarketplaceFilterClearVisibility() {
+    const filterInput = byId('marketplace-filter');
+    const clearButton = byId('marketplace-filter-clear');
+    if (!filterInput || !clearButton) {
+      return;
+    }
+    clearButton.hidden = String(filterInput.value || '').length === 0;
+  }
+
+  function requestMarketplaceRender() {
+    // Keep card position stable while user is toggling agent icons on a hovered card.
+    if (marketplaceHoverLock) {
+      marketplaceRenderPending = true;
+      return;
+    }
+    marketplaceRenderPending = false;
     renderMarketplace();
   }
 
@@ -1088,19 +1388,33 @@
   function getDeclaredAgents() {
     ensureAgentsStateSynced();
     const seen = new Set();
-    return state.agents.map((entry) => normalizeAgentKey(entry.path)).filter((agent) => {
-      if (!agent || seen.has(agent)) {
-        return false;
+    const declared = [];
+    (state.agents || []).forEach((entry) => {
+      const normalizedPath = normalizeAgentPath(entry && entry.path ? entry.path : '');
+      const key = normalizeAgentKey(normalizedPath);
+      if (!key || seen.has(key)) {
+        return;
       }
-      seen.add(agent);
-      return true;
+      seen.add(key);
+      declared.push({
+        key: key,
+        path: normalizedPath,
+        label: getAgentDisplayName(entry)
+      });
     });
+    return declared;
   }
 
   function getInstalledSkillsByAgent() {
     const result = {};
+    const declaredByPath = new Map();
+    getDeclaredAgents().forEach((agent) => {
+      declaredByPath.set(normalizeAgentPath(agent.path), agent.key);
+    });
+
     state.installedSkills.forEach((group) => {
-      const agent = normalizeAgentKey(group.folder);
+      const normalizedFolder = normalizeAgentPath(group.folder || '');
+      const agent = declaredByPath.get(normalizedFolder) || normalizeAgentKey(normalizedFolder);
       if (!agent) {
         return;
       }
@@ -1113,14 +1427,44 @@
     return result;
   }
 
+  function syncMarketplaceMetaFromGroups() {
+    const firstGroup = Array.isArray(state.marketplaceSkills) && state.marketplaceSkills.length
+      ? state.marketplaceSkills[0]
+      : null;
+
+    if (!firstGroup) {
+      if (typeof state.marketplacePage !== 'number' || state.marketplacePage < 0) {
+        state.marketplacePage = 0;
+      }
+      if (typeof state.marketplaceLimit !== 'number' || state.marketplaceLimit <= 0) {
+        state.marketplaceLimit = 50;
+      }
+      if (typeof state.marketplaceTotal !== 'number' || state.marketplaceTotal < 0) {
+        state.marketplaceTotal = 0;
+      }
+      return;
+    }
+
+    if (typeof firstGroup.page === 'number' && firstGroup.page >= 0) {
+      state.marketplacePage = firstGroup.page;
+    }
+    if (typeof firstGroup.limit === 'number' && firstGroup.limit > 0) {
+      state.marketplaceLimit = firstGroup.limit;
+    }
+    if (typeof firstGroup.total === 'number' && firstGroup.total >= 0) {
+      state.marketplaceTotal = firstGroup.total;
+    }
+  }
+
   function updateUi(newState) {
     state = Object.assign({}, state, newState || {});
     state.language = normalizeLanguageCode(state.language);
     ensureAgentsStateSynced();
     state.customAgentIcons = buildCustomAgentIconMapFromAgents(state.agents);
+    syncMarketplaceMetaFromGroups();
     applyLanguageUi();
     renderAgentCards();
-    renderMarketplace();
+    requestMarketplaceRender();
   }
 
   function updateAgentIconPreview() {
@@ -1173,6 +1517,8 @@
     const pathInput = byId('new-agent-path');
     const fileInput = byId('new-agent-icon-file');
     const select = byId('new-agent-icon-select');
+    const typeSelect = byId('new-agent-kind');
+    const nameInput = byId('new-agent-name');
     if (pathInput) {
       pathInput.value = '';
     }
@@ -1182,8 +1528,14 @@
     if (select) {
       select.value = '';
     }
+    if (typeSelect) {
+      typeSelect.value = 'copilot';
+    }
+    if (nameInput) {
+      nameInput.value = '';
+    }
     pendingCustomIcon = '';
-    updateAgentIconPreview();
+    updateAgentTypeUi();
   }
 
   function readCustomIconFromFile(file) {
@@ -1199,6 +1551,13 @@
   }
 
   function bindActions() {
+    document.addEventListener('mouseleave', function () {
+      marketplaceHoverLock = false;
+      if (marketplaceRenderPending) {
+        requestMarketplaceRender();
+      }
+    });
+
     const addAgent = byId('add-agent');
     if (addAgent) {
       addAgent.addEventListener('click', function () {
@@ -1218,6 +1577,19 @@
     if (marketplaceFilter) {
       marketplaceFilter.addEventListener('input', function () {
         refreshFilter();
+      });
+    }
+
+    const marketplaceFilterClear = byId('marketplace-filter-clear');
+    if (marketplaceFilterClear) {
+      marketplaceFilterClear.addEventListener('click', function () {
+        const filterInput = byId('marketplace-filter');
+        if (!filterInput) {
+          return;
+        }
+        filterInput.value = '';
+        refreshFilter();
+        filterInput.focus();
       });
     }
 
@@ -1277,6 +1649,13 @@
       });
     }
 
+    const agentTypeSelect = byId('new-agent-kind');
+    if (agentTypeSelect) {
+      agentTypeSelect.addEventListener('change', function () {
+        updateAgentTypeUi();
+      });
+    }
+
     const fileInput = byId('new-agent-icon-file');
     if (fileInput) {
       fileInput.addEventListener('change', function () {
@@ -1322,17 +1701,41 @@
       saveAgent.addEventListener('click', function () {
         const pathInput = byId('new-agent-path');
         const iconPresetInput = byId('new-agent-icon-select');
-        if (!pathInput || !iconPresetInput) {
+        const typeInput = byId('new-agent-kind');
+        const nameInput = byId('new-agent-name');
+        if (!pathInput || !iconPresetInput || !typeInput || !nameInput) {
           return;
         }
         const normalizedPath = normalizeAgentPath(pathInput.value);
         if (!normalizedPath) {
           return;
         }
-        const selectedPreset = iconPresetInput.value;
+        const selectedType = typeInput.value;
+        const commonPreset = getCommonAgentPresetByValue(selectedType);
+        let selectedPreset = iconPresetInput.value;
+        if (!selectedPreset && commonPreset) {
+          selectedPreset = commonPreset.icon;
+        }
+
+        let agentName = '';
+        if (selectedType === 'custom') {
+          agentName = String(nameInput.value || '').trim();
+          if (!agentName) {
+            agentName = getPathLeaf(normalizedPath) || normalizeAgentKey(normalizedPath);
+          }
+        } else if (commonPreset) {
+          agentName = commonPreset.label;
+        }
+
         const customIcon = pendingCustomIcon || '';
         const icon = customIcon || selectedPreset || undefined;
-        const nextAgent = icon ? { path: normalizedPath, icon } : { path: normalizedPath };
+        const nextAgent = { path: normalizedPath };
+        if (icon) {
+          nextAgent.icon = icon;
+        }
+        if (agentName) {
+          nextAgent.name = agentName;
+        }
 
         const nextAgents = Array.isArray(state.agents) ? state.agents.slice() : [];
         if (editingAgentKey) {
@@ -1383,16 +1786,12 @@
     if (message.command === 'installedSkills') {
       state.installedSkills = message.data || [];
       renderAgentCards();
+      requestMarketplaceRender();
     }
     if (message.command === 'marketplaceSkills') {
       state.marketplaceSkills = message.data || [];
-      const firstGroup = Array.isArray(state.marketplaceSkills) && state.marketplaceSkills.length ? state.marketplaceSkills[0] : null;
-      if (firstGroup) {
-        state.marketplacePage = typeof firstGroup.page === 'number' ? firstGroup.page : 0;
-        state.marketplaceLimit = typeof firstGroup.limit === 'number' ? firstGroup.limit : state.marketplaceLimit;
-        state.marketplaceTotal = typeof firstGroup.total === 'number' ? firstGroup.total : state.marketplaceTotal;
-      }
-      renderMarketplace();
+      syncMarketplaceMetaFromGroups();
+      requestMarketplaceRender();
     }
   });
 

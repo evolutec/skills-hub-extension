@@ -7,6 +7,7 @@ import * as https from 'https';
 interface AgentConfig {
   path: string;
   icon?: string;
+  name?: string;
 }
 
 type SupportedLanguage = 'en' | 'es' | 'zh' | 'fr' | 'ar';
@@ -31,6 +32,15 @@ interface ClaudePluginsApiResponse {
   limit?: number;
   offset?: number;
   skills?: any[];
+}
+
+interface MarketplaceSkill {
+  name: string;
+  path: string;
+  entries: string[];
+  missingSkillMd: boolean;
+  sourceUrl?: string;
+  description?: string;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -58,9 +68,13 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   private static readonly SUPPORTED_LANGUAGES: SupportedLanguage[] = ['en', 'es', 'zh', 'fr', 'ar'];
   private claudePluginsCache?: {
     loadedAt: number;
-    skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[];
+    source: string;
+    rawTotal: number;
+    nextOffset: number;
+    fullyLoaded: boolean;
+    skillsByKey: Map<string, MarketplaceSkill>;
   };
-  private marketplaceSkills: { name: string; path: string; entries: string[]; missingSkillMd: boolean; sourceUrl?: string }[] = [];
+  private marketplaceSkills: MarketplaceSkill[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -128,6 +142,17 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
             command: 'marketplaceSkills',
             data: await this.loadMarketplaceSkills(message.data.repos, message.data.page, message.data.limit)
           });
+        case 'openExternal': {
+          const rawUrl = typeof message.data?.url === 'string' ? message.data.url.trim() : '';
+          if (/^https?:\/\//i.test(rawUrl)) {
+            try {
+              await vscode.env.openExternal(vscode.Uri.parse(rawUrl));
+            } catch {
+              // ignore URL opening errors silently
+            }
+          }
+          return;
+        }
       }
     });
   }
@@ -204,6 +229,14 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     const repoConfig = { repos: ['https://claude-plugins.dev/skills'] };
     const installedSkills = await this.loadInstalledSkills(config.skillPaths);
     const marketplaceSkills = await this.loadMarketplaceSkills(repoConfig.repos);
+    const firstMarketplaceGroup = marketplaceSkills.length ? marketplaceSkills[0] : undefined;
+    const marketplacePage = typeof firstMarketplaceGroup?.page === 'number' ? firstMarketplaceGroup.page : 0;
+    const marketplaceLimit = typeof firstMarketplaceGroup?.limit === 'number' && firstMarketplaceGroup.limit > 0
+      ? firstMarketplaceGroup.limit
+      : SkillsHubViewProvider.CLAUDE_PLUGINS_PAGE_SIZE;
+    const marketplaceTotal = typeof firstMarketplaceGroup?.total === 'number' && firstMarketplaceGroup.total >= 0
+      ? firstMarketplaceGroup.total
+      : 0;
     return {
       skillPaths: config.skillPaths,
       agents: config.agents,
@@ -212,7 +245,10 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
       repos: repoConfig.repos,
       configFolderPath: this.getConfigFolder().fsPath,
       installedSkills,
-      marketplaceSkills
+      marketplaceSkills,
+      marketplacePage,
+      marketplaceLimit,
+      marketplaceTotal
     };
   }
 
@@ -254,7 +290,16 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
         }
         const iconValue = (item as { icon?: unknown }).icon;
         const icon = typeof iconValue === 'string' && iconValue.trim() ? iconValue.trim() : undefined;
-        candidates.push({ path: normalizedPath, icon });
+        const nameValue = (item as { name?: unknown }).name;
+        const name = typeof nameValue === 'string' && nameValue.trim() ? nameValue.trim() : undefined;
+        const candidate: AgentConfig = { path: normalizedPath };
+        if (icon) {
+          candidate.icon = icon;
+        }
+        if (name) {
+          candidate.name = name;
+        }
+        candidates.push(candidate);
       }
     }
 
@@ -271,17 +316,27 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    const deduped: AgentConfig[] = [];
-    const seenPaths = new Set<string>();
+    const dedupedByPath = new Map<string, AgentConfig>();
     for (const candidate of candidates) {
       const key = candidate.path.toLowerCase();
-      if (seenPaths.has(key)) {
+      const existing = dedupedByPath.get(key);
+      if (!existing) {
+        dedupedByPath.set(key, {
+          path: candidate.path,
+          icon: candidate.icon,
+          name: candidate.name
+        });
         continue;
       }
-      seenPaths.add(key);
-      deduped.push(candidate.icon ? { path: candidate.path, icon: candidate.icon } : { path: candidate.path });
+
+      if (!existing.icon && candidate.icon) {
+        existing.icon = candidate.icon;
+      }
+      if (!existing.name && candidate.name) {
+        existing.name = candidate.name;
+      }
     }
-    return deduped;
+    return Array.from(dedupedByPath.values());
   }
 
   private normalizeAgentKeyFromPath(folderPath: string): string {
@@ -420,6 +475,50 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private collectInstalledSkillDirs(rootPath: string): string[] {
+    const discovered: string[] = [];
+    const queue: string[] = [rootPath];
+    const visited = new Set<string>();
+
+    while (queue.length) {
+      const currentPath = queue.shift()!;
+      let visitedKey = currentPath;
+      try {
+        visitedKey = fs.realpathSync(currentPath);
+      } catch {
+        // Keep fallback key when realpath cannot be resolved.
+      }
+
+      const normalizedVisitedKey = visitedKey.replace(/\\/g, '/').toLowerCase();
+      if (visited.has(normalizedVisitedKey)) {
+        continue;
+      }
+      visited.add(normalizedVisitedKey);
+
+      const skillMdPath = path.join(currentPath, 'SKILL.md');
+      if (fs.existsSync(skillMdPath)) {
+        discovered.push(currentPath);
+        continue;
+      }
+
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(currentPath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (!this.isDirectoryEntry(currentPath, entry)) {
+          continue;
+        }
+        queue.push(path.join(currentPath, entry.name));
+      }
+    }
+
+    return discovered;
+  }
+
   private async loadInstalledSkills(skillPaths: string[]) {
     const result: { folder: string; skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[] }[] = [];
     const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -433,20 +532,18 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
           continue;
         }
 
-        const skills: { name: string; path: string; entries: string[]; missingSkillMd: boolean }[] = [];
-        if (fs.existsSync(path.join(fullPath, 'SKILL.md'))) {
-          skills.push(this.buildSkillCard(fullPath, path.basename(fullPath), fullPath));
-        }
-
-        const entries = fs.readdirSync(fullPath, { withFileTypes: true })
-          .filter((entry) => this.isDirectoryEntry(fullPath, entry));
-
-        for (const entry of entries) {
-          const childPath = path.join(fullPath, entry.name);
-          if (fs.existsSync(path.join(childPath, 'SKILL.md'))) {
-            skills.push(this.buildSkillCard(childPath, entry.name, fullPath));
-          }
-        }
+        const seenSkillDirs = new Set<string>();
+        const skills = this.collectInstalledSkillDirs(fullPath)
+          .filter((skillDirPath) => {
+            const key = path.resolve(skillDirPath).replace(/\\/g, '/').toLowerCase();
+            if (seenSkillDirs.has(key)) {
+              return false;
+            }
+            seenSkillDirs.add(key);
+            return true;
+          })
+          .map((skillDirPath) => this.buildSkillCard(skillDirPath, path.basename(skillDirPath), fullPath))
+          .sort((a, b) => a.name.localeCompare(b.name));
 
         result.push({ folder, skills });
       } catch (error) {
@@ -543,31 +640,110 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     return source.includes('claude-plugins.dev');
   }
 
+  private getMarketplaceSkillDedupKey(skill: any): string {
+    const rawName = typeof skill?.name === 'string' ? skill.name.trim().toLowerCase() : '';
+    if (rawName) {
+      return rawName;
+    }
+    const rawNamespace = typeof skill?.namespace === 'string' ? skill.namespace.trim().toLowerCase() : '';
+    if (rawNamespace) {
+      return rawNamespace;
+    }
+    const rawSourceUrl = typeof skill?.sourceUrl === 'string' ? skill.sourceUrl.trim().toLowerCase() : '';
+    return rawSourceUrl;
+  }
+
+  private mapClaudePluginsSkillRowToCard(skill: any): MarketplaceSkill {
+    return {
+      name: skill.name,
+      path: skill.namespace,
+      description: typeof skill.description === 'string' ? skill.description : '',
+      sourceUrl: skill.sourceUrl,
+      entries: [
+        skill.description || '',
+        'Source: claude-plugins.dev',
+        skill.sourceUrl,
+        (skill.metadata && skill.metadata.iconUrl) ? skill.metadata.iconUrl : ''
+      ],
+      missingSkillMd: false
+    };
+  }
+
   private async loadClaudePluginsSkills(source: string, page: number, limit: number) {
-    const offset = Math.max(0, page) * Math.max(1, limit);
-    const apiUrl = `https://claude-plugins.dev/api/skills?limit=${Math.max(1, limit)}&offset=${offset}`;
-    const raw = await this.fetchUrlText(apiUrl);
-    const data = JSON.parse(raw) as ClaudePluginsApiResponse;
-    const pageSkills = Array.isArray(data.skills) ? data.skills : [];
-    const total = typeof data.total === 'number' && data.total >= 0 ? data.total : pageSkills.length;
+    const normalizedPage = Math.max(0, page);
+    const normalizedLimit = Math.max(1, limit);
+    const requiredCount = (normalizedPage + 1) * normalizedLimit;
+    const now = Date.now();
+
+    const isCacheExpired = !this.claudePluginsCache
+      || this.claudePluginsCache.source !== source
+      || (now - this.claudePluginsCache.loadedAt) > SkillsHubViewProvider.CLAUDE_PLUGINS_CACHE_TTL_MS;
+
+    if (isCacheExpired) {
+      this.claudePluginsCache = {
+        loadedAt: now,
+        source,
+        rawTotal: 0,
+        nextOffset: 0,
+        fullyLoaded: false,
+        skillsByKey: new Map<string, MarketplaceSkill>()
+      };
+    }
+
+    const cache = this.claudePluginsCache;
+    if (!cache) {
+      return { skills: [], total: 0, page: normalizedPage, limit: normalizedLimit };
+    }
+
+    const requestLimit = SkillsHubViewProvider.CLAUDE_PLUGINS_PAGE_SIZE;
+    let requestCount = 0;
+    while (!cache.fullyLoaded && cache.skillsByKey.size < requiredCount && requestCount < 50) {
+      const apiUrl = `https://claude-plugins.dev/api/skills?limit=${requestLimit}&offset=${cache.nextOffset}`;
+      const raw = await this.fetchUrlText(apiUrl);
+      const data = JSON.parse(raw) as ClaudePluginsApiResponse;
+      const rows = Array.isArray(data.skills) ? data.skills : [];
+
+      if (typeof data.total === 'number' && data.total >= 0) {
+        cache.rawTotal = data.total;
+      }
+
+      if (!rows.length) {
+        cache.fullyLoaded = true;
+        break;
+      }
+
+      for (const row of rows) {
+        const dedupKey = this.getMarketplaceSkillDedupKey(row);
+        if (!dedupKey || cache.skillsByKey.has(dedupKey)) {
+          continue;
+        }
+        cache.skillsByKey.set(dedupKey, this.mapClaudePluginsSkillRowToCard(row));
+      }
+
+      cache.nextOffset += rows.length;
+      if (rows.length < requestLimit) {
+        cache.fullyLoaded = true;
+      }
+      if (cache.rawTotal > 0 && cache.nextOffset >= cache.rawTotal) {
+        cache.fullyLoaded = true;
+      }
+
+      requestCount += 1;
+    }
+
+    cache.loadedAt = now;
+    const uniqueSkills = Array.from(cache.skillsByKey.values());
+    const start = normalizedPage * normalizedLimit;
+    const skills = uniqueSkills.slice(start, start + normalizedLimit);
+    const total = cache.fullyLoaded
+      ? uniqueSkills.length
+      : Math.max(cache.rawTotal, uniqueSkills.length);
 
     return {
-      skills: pageSkills.map((skill: any) => ({
-        name: skill.name,
-        path: skill.namespace,
-        description: typeof skill.description === 'string' ? skill.description : '',
-        sourceUrl: skill.sourceUrl,
-        entries: [
-          skill.description || '',
-          `Source: claude-plugins.dev`,
-          skill.sourceUrl,
-          (skill.metadata && skill.metadata.iconUrl) ? skill.metadata.iconUrl : ''
-        ],
-        missingSkillMd: false
-      })),
+      skills,
       total,
-      page: Math.max(0, page),
-      limit: Math.max(1, limit)
+      page: normalizedPage,
+      limit: normalizedLimit
     };
   }
 
@@ -1030,7 +1206,52 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
     .agent-icon-preview-wrap { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-background); display: flex; align-items: center; justify-content: center; overflow: hidden; margin-bottom: 8px; }
     .agent-icon-preview-wrap img { width: 32px; height: 32px; display: none; }
     .marketplace-filter-wrap { margin-top: 8px; }
-    .marketplace-filter-wrap input { margin-bottom: 0; }
+    .marketplace-filter-input-wrap { position: relative; display: flex; align-items: center; }
+    .marketplace-filter-wrap input { margin-bottom: 0; padding-right: 42px; }
+    .marketplace-filter-clear {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 26px;
+      height: 26px;
+      margin: 0;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .marketplace-filter-clear:hover {
+      transform: translateY(-50%);
+      background: var(--vscode-toolbar-hoverBackground);
+      border-color: var(--vscode-editorWidget-border);
+      color: var(--vscode-foreground);
+    }
+    .marketplace-filter-clear[hidden] { display: none; }
+    .skill-page-link {
+      display: inline-flex;
+      align-items: center;
+      margin: 0 0 10px 0;
+      padding: 0;
+      border: none;
+      background: none;
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+      font-size: 0.9em;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .skill-page-link:hover {
+      color: var(--vscode-textLink-activeForeground);
+      text-decoration: underline;
+    }
     .marketplace-pagination { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 14px; margin-bottom: 14px; }
     .settings-field {
       max-width: 360px;
@@ -1061,7 +1282,10 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
   <div class="pane" id="pane-marketplace">
     <div class="section">
       <div class="marketplace-filter-wrap">
-        <input type="text" id="marketplace-filter" placeholder="Filter skills (name, namespace, description)" />
+        <div class="marketplace-filter-input-wrap">
+          <input type="text" id="marketplace-filter" placeholder="Filter skills (name, namespace, description)" />
+          <button id="marketplace-filter-clear" class="marketplace-filter-clear" type="button" aria-label="Clear filter" title="Clear filter" hidden>x</button>
+        </div>
       </div>
       <div class="marketplace-pagination">
         <button id="marketplace-prev" type="button">Previous</button>
@@ -1085,6 +1309,12 @@ class SkillsHubViewProvider implements vscode.WebviewViewProvider {
         <div class="agent-form-header">
           <div id="agent-form-title" class="agent-form-title">Add Agent</div>
           <button id="close-agent-form" class="agent-form-close" type="button" aria-label="Close agent form">✕</button>
+        </div>
+        <label id="label-new-agent-kind" for="new-agent-kind">Agent type</label>
+        <select id="new-agent-kind"></select>
+        <div id="new-agent-name-wrap" hidden>
+          <label id="label-new-agent-name" for="new-agent-name">Agent name</label>
+          <input type="text" id="new-agent-name" placeholder="My custom agent" />
         </div>
         <label id="label-new-agent-path" for="new-agent-path">Agent path</label>
         <input type="text" id="new-agent-path" placeholder="C:/Users/.../.roo/skills" />
